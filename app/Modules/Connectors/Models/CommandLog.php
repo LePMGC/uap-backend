@@ -25,7 +25,8 @@ class CommandLog extends Model
         'ended_at',
         'execution_time_ms',
         'ip_address',
-        'raw_response', 
+        'raw_response',
+        'job_instance_id'
     ];
 
     protected $casts = [
@@ -44,5 +45,11 @@ class CommandLog extends Model
     public function instance()
     {
         return $this->belongsTo(ProviderInstance::class, 'provider_instance_id');
+    }
+
+    // Inside CommandLog class
+    public function jobInstance(): BelongsTo
+    {
+        return $this->belongsTo(JobInstance::class, 'job_instance_id');
     }
 }

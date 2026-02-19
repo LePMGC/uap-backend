@@ -14,7 +14,7 @@ class CommandExecutor
     /**
      * Execute a command against a provider instance.
      */
-    public function execute(int $instanceId, string $commandName, array $userInput, int $userId): CommandLog
+    public function execute(int $instanceId, string $commandName, array $userInput, int $userId, ?string $jobInstanceId = null): CommandLog
     {
         $instance = ProviderInstance::findOrFail($instanceId);
         $blueprint = $this->getBlueprint($instance->category_slug, $commandName);
@@ -22,10 +22,11 @@ class CommandExecutor
         $log = CommandLog::create([
             'user_id' => $userId,
             'provider_instance_id' => $instanceId,
+            'job_instance_id' => $jobInstanceId, 
             'command_name' => $commandName,
             'category_slug' => $instance->category_slug,
             'started_at' => now(),
-            'ip_address' => request()->ip(),
+            'ip_address' => request()->ip() ?? '127.0.0.1',
         ]);
 
         $startTime = microtime(true);

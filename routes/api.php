@@ -7,6 +7,7 @@ use App\Modules\Core\UserManagement\Controllers\UserController;
 use App\Modules\Connectors\Controllers\DataSourceController;
 use App\Modules\Connectors\Controllers\ProviderInstanceController;
 use App\Modules\Connectors\Controllers\CommandLogController;
+use App\Modules\Connectors\Controllers\BatchJobController;
 
 /*
 |--------------------------------------------------------------------------
@@ -70,5 +71,28 @@ Route::middleware('auth:api')->group(function () {
         Route::get('/', [CommandLogController::class, 'index']);
         Route::get('/{id}', [CommandLogController::class, 'show']);
         Route::post('/', [CommandLogController::class, 'store']); // This handles new & cloned runs
+    });
+
+
+    Route::prefix('batch')->group(function () {
+    
+        // --- Template Management & Scheduling ---
+        Route::prefix('templates')->group(function () {
+            Route::post('/', [BatchJobController::class, 'storeTemplate']); 
+            
+            Route::prefix('{id}')->group(function () {
+                Route::post('/run', [BatchJobController::class, 'runJob']);             
+                Route::patch('/schedule', [BatchJobController::class, 'updateSchedule']);
+                Route::post('/pause', [BatchJobController::class, 'toggleSchedule']); 
+                Route::post('/terminate', [BatchJobController::class, 'terminateSchedule']);
+            });
+        });
+
+        // --- Execution Instances & Monitoring ---
+        Route::prefix('instances/{instanceId}')->group(function () {
+            Route::get('/status', [BatchJobController::class, 'getInstanceStatus']); 
+            Route::get('/download/{type}', [BatchJobController::class, 'downloadFile']);
+        });
+
     });
 });
