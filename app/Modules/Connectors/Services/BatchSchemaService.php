@@ -19,10 +19,15 @@ class BatchSchemaService
         $connector = DataSourceFactory::make($source->type);
 
         // 2. Merge connection details from DB with resource details from UI
+        $connectionSettings = is_array($source->connection_settings)
+            ? $source->connection_settings
+            : json_decode($source->connection_settings ?? '{}', true);
+
         $fullConfig = array_merge(
-            json_decode($source->connection_settings, true),
+            $connectionSettings ?? [],
             $sourceConfig
         );
+
 
         // 3. Resolve placeholders if the user used them in the discovery path
         // Note: We might need to resolve {Y-m-d} even during discovery!

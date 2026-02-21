@@ -11,6 +11,10 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Cron\CronExpression;
+use Spatie\Permission\Middleware\PermissionMiddleware;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
+
 
 class BatchJobController extends Controller
 {
@@ -18,6 +22,35 @@ class BatchJobController extends Controller
         protected BatchOrchestrator $orchestrator,
         protected BatchSchemaService $schemaService
     ) {}
+
+    public static function middleware(): array
+    {
+        return [
+            // Ensure the user is authenticated for ALL methods
+            new Middleware('auth:api'),
+
+            // Discovery (The Mapping Step)
+            new Middleware(PermissionMiddleware::using('discover_batch_headers'), only: ['discoverHeaders']),
+
+            // Viewing (Templates & History)
+            new Middleware(PermissionMiddleware::using('view_batch_templates|view_batch_instances'), only: ['indexTemplates', 'indexInstances', 'getInstanceStatus', 'showTemplate']),
+
+            // Creation
+            new Middleware(PermissionMiddleware::using('create_batch_templates'), only: ['storeTemplate']),
+
+            // Execution
+            new Middleware(PermissionMiddleware::using('run_batch_jobs'), only: ['runJob']),
+
+            // Results
+            new Middleware(PermissionMiddleware::using('download_batch_results'), only: ['downloadFile']),
+
+            // Schedule Management
+            new Middleware(PermissionMiddleware::using('manage_batch_schedules'), only: ['toggleSchedule', 'terminateSchedule', 'updateSchedule']),
+
+            // Cancellation
+            new Middleware(PermissionMiddleware::using('cancel_batch_instances'), only: ['cancelInstance']),
+        ];
+    }
 
     /**
      * STEP 2: DISCOVER HEADERS (Unified)
@@ -28,24 +61,39 @@ class BatchJobController extends Controller
     {
         $request->validate([
             'data_source_id' => 'required_without:file|exists:data_sources,id',
-            'file'           => 'required_without:data_source_id|file|mimes:csv,txt',
-            'source_config'  => 'required_with:data_source_id|array', // e.g., ['table' => 'users']
+            'file'           => 'required_without:data_source_id|file|mimes:csv,txt|max:10240',
+            'source_config'  => 'required_with:data_source_id|array',
         ]);
 
         try {
             // CASE A: Manual File Upload
             if ($request->hasFile('file')) {
-                $headers = $this->schemaService->getHeadersFromUpload($request->file('file'));
-                return response()->json(['headers' => $headers]);
+                $file = $request->file('file');
+                
+                // 1. Store the file in a temp directory
+                // We use a unique name to avoid collisions during concurrent user sessions
+                $filename = 'discovery_' . auth()->id() . '_' . time() . '.' . $file->getClientOriginalExtension();
+                $tempPath = $file->storeAs('temp/batch_discovery', $filename);
+
+                // 2. Extract headers using the service
+                $headers = $this->schemaService->getHeadersFromUpload($file);
+
+                return response()->json([
+                    'headers' => $headers,
+                    'temporary_path' => $tempPath, // FE will send this back in storeTemplate
+                    'source_type' => 'upload'
+                ]);
             }
 
             // CASE B: Existing DataSource (SFTP, DB, API)
             $dataSource = \App\Modules\Connectors\Models\DataSource::findOrFail($request->data_source_id);
-            
-            // We pass the config (e.g., path/pattern) to the schema service
-            $headers = $this->schemaService->discoverHeaders($dataSource, $request->source_config);
+            $headers = $this->schemaService->discoverHeaders($dataSource->type, $request->source_config);
 
-            return response()->json(['headers' => $headers]);
+            return response()->json([
+                'headers' => $headers,
+                'source_type' => $dataSource->type
+            ]);
+
         } catch (\Exception $e) {
             return response()->json(['error' => 'Discovery failed: ' . $e->getMessage()], 422);
         }
@@ -56,46 +104,51 @@ class BatchJobController extends Controller
      */
     public function storeTemplate(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'name'                  => 'required|string|max:255',
-            'provider_instance_id'  => 'required|exists:provider_instances,id',
-            'data_source_id'        => 'required|exists:data_sources,id',
-            'column_mapping'        => 'required|array', // The mapping contract
-            'expected_columns'      => 'required|array', // The headers discovered in Step 2
-            'workflow_steps'        => 'required|array|min:1',
-            'job_specific_config'   => 'nullable|array',
-            
-            // Scheduling logic
-            'is_scheduled'          => 'boolean',
-            'cron_expression'       => 'required_if:is_scheduled,true|nullable|string',
-            'timezone'              => 'string',
-            'starts_at'             => 'nullable|date',
-            'ends_at'               => 'nullable|date|after:starts_at',
+        $validated = $request->validate([
+            'name'                 => 'required|string',
+            'provider_instance_id' => 'required|integer',
+            'data_source_id'       => 'required|integer',
+            'expected_columns'     => 'required|array',
+            'column_mapping'       => 'required|array',
+            'workflow_steps'       => 'required|array',
+            'job_specific_config'  => 'nullable|array',
+            'source_config'        => 'nullable|array',
+            'is_scheduled'         => 'boolean',
         ]);
 
-        if ($validator->fails()) {
-            return response()->json(['errors' => $validator->errors()], 422);
-        }
-
         try {
-            $data = $validator->validated();
+            // 2. Handle the file migration logic
+            if (isset($validated['source_config']['temporary_path'])) {
+                $tempPath = $validated['source_config']['temporary_path'];
+                
+                // Check if file exists in temp storage before proceeding
+                if (!Storage::exists($tempPath)) {
+                    return response()->json([
+                        'error' => 'Template creation failed: The temporary source file was not found. Please re-upload the sample file.'
+                    ], 422);
+                }
 
-            // 1. Calculate the first run if scheduled
-            if ($data['is_scheduled'] ?? false) {
-                $cron = new \Cron\CronExpression($data['cron_expression']);
-                $data['next_run_at'] = $cron->getNextRunDate()->format('Y-m-d H:i:s');
-                $data['schedule_active'] = true;
+                $filename = basename($tempPath);
+                $permanentPath = "templates/" . $filename; 
+
+                // Move file to the permanent /private/templates folder
+                Storage::move($tempPath, $permanentPath);
+                
+                // Update the config with the permanent path for the DB record
+                $validated['source_config']['file_path'] = $permanentPath;
+                unset($validated['source_config']['temporary_path']);
             }
 
-            $data['user_id'] = auth()->id() ?? $request->user_id;
-            $data['id'] = \Illuminate\Support\Str::uuid();
-
-            // 2. Create the Template
-            $template = JobTemplate::create($data);
+            // 3. Explicitly create the model
+            $template = new \App\Modules\Connectors\Models\JobTemplate();
+            $template->fill($validated);
+            $template->user_id = auth()->id();
+            $template->id = (string) \Illuminate\Support\Str::uuid();
+            $template->save();
 
             return response()->json([
                 'message' => 'Template created successfully',
-                'template_id' => $template->id
+                'id' => $template->id
             ], 201);
 
         } catch (\Exception $e) {
@@ -138,17 +191,18 @@ class BatchJobController extends Controller
         $files = [
             'success' => 'results_success.csv',
             'failed'  => 'results_failed.csv',
-            'source'  => 'source.csv' // This is the processed input snapshot
+            'source'  => 'source.csv'
         ];
 
-        if (!isset($files[$type])) {
-            return response()->json(['error' => 'Invalid file type'], 400);
-        }
-
-        $path = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}/{$files[$type]}";
+        // Remove 'private/' from the path. 
+        // Laravel usually maps the 'local' disk to 'storage/app' or 'storage/app/private'
+        $path = "jobs/{$instance->id}/" . $files[$type];
 
         if (!Storage::exists($path)) {
-            return response()->json(['error' => 'File not found'], 404);
+            return response()->json([
+                'error' => 'File not found on storage',
+                'debug_path' => $path 
+            ], 404);
         }
 
         return Storage::download($path, "job_{$instance->id}_{$files[$type]}");

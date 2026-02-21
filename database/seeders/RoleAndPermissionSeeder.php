@@ -22,6 +22,22 @@ class RoleAndPermissionSeeder extends Seeder
             'view_datasources', 'create_datasources', 'edit_datasources', 'delete_datasources', 'test_datasources',
             'execute_commands', 'execute_all_commands', // Added execute_all_commands for super-admins
             'view_all_command_logs', 'view_own_command_logs',
+
+            // Template Management
+            'view_batch_templates', 
+            'create_batch_templates', 
+            'edit_batch_templates', 
+            'delete_batch_templates',
+            'discover_batch_headers', 
+            
+            // Execution & Monitoring
+            'run_batch_jobs',          
+            'view_batch_instances',    
+            'cancel_batch_instances',  
+            'download_batch_results',  
+            
+            // Scheduling
+            'manage_batch_schedules', 
         ];
 
         // 2. Dynamic Command Action Permissions
@@ -63,8 +79,13 @@ class RoleAndPermissionSeeder extends Seeder
             'execute_commands',
             'view_own_command_logs',
             'get_instance_commands',
-            'ericsson-ucip.view', // Can see "Get" commands
+            'ericsson-ucip.view',
             'ericsson-cai.view',
+            'discover_batch_headers',
+            'view_batch_templates',
+            'run_batch_jobs',
+            'view_batch_instances',
+            'download_batch_results',
         ];
 
         $operator->syncPermissions($operatorPermissions);

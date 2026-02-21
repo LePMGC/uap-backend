@@ -75,52 +75,24 @@ Route::middleware('auth:api')->group(function () {
 
 
     Route::prefix('batch')->group(function () {
-
-        /**
-         * 1. PRE-CREATION / DISCOVERY
-         * Used by the FE to fetch headers from a source before saving the template.
-         */
         Route::post('/discover-headers', [BatchJobController::class, 'discoverHeaders']);
 
-        /**
-         * 2. TEMPLATE MANAGEMENT
-         * CRUD and Scheduling controls for the "Permanent Contracts".
-         */
         Route::prefix('templates')->group(function () {
-            Route::get('/', [BatchJobController::class, 'indexTemplates']); // List all templates
-            Route::post('/', [BatchJobController::class, 'storeTemplate']); // Save the mapping & schedule
+            Route::get('/', [BatchJobController::class, 'indexTemplates']);
+            Route::post('/', [BatchJobController::class, 'storeTemplate']);
             
             Route::prefix('{id}')->group(function () {
-                Route::get('/', [BatchJobController::class, 'showTemplate']);
-                Route::delete('/', [BatchJobController::class, 'destroyTemplate']);
-                
-                // Manual Trigger
                 Route::post('/run', [BatchJobController::class, 'runJob']);
-                
-                // Schedule Controls
-                Route::patch('/schedule', [BatchJobController::class, 'updateSchedule']);
                 Route::post('/toggle', [BatchJobController::class, 'toggleSchedule']); 
                 Route::post('/terminate', [BatchJobController::class, 'terminateSchedule']);
             });
         });
 
-        /**
-         * 3. EXECUTION INSTANCES & MONITORING
-         * Tracking the progress of specific runs and downloading results.
-         */
         Route::prefix('instances')->group(function () {
-            Route::get('/', [BatchJobController::class, 'indexInstances']); // Dashboard list
-            
-            Route::prefix('{instanceId}')->group(function () {
-                Route::get('/status', [BatchJobController::class, 'getInstanceStatus']); 
-                
-                // Results: 'success' (CSV), 'failed' (CSV), or 'all' (Zip)
-                Route::get('/download/{type}', [BatchJobController::class, 'downloadFile']);
-                
-                // Optional: Terminate an active running batch
-                Route::post('/cancel', [BatchJobController::class, 'cancelInstance']);
-            });
+            Route::get('/', [BatchJobController::class, 'indexInstances']);
+            Route::get('/{instanceId}/status', [BatchJobController::class, 'getInstanceStatus']);
+            Route::get('/{instanceId}/download/{type}', [BatchJobController::class, 'downloadFile']);
+            Route::post('/{instanceId}/cancel', [BatchJobController::class, 'cancelInstance']);
         });
-
     });
 });

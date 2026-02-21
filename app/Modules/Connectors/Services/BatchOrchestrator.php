@@ -8,28 +8,27 @@ use App\Modules\Connectors\Jobs\ProcessBatchChunk;
 use Illuminate\Support\Facades\{Bus, Storage};
 use League\Csv\Reader;
 use League\Csv\Writer;
+use Illuminate\Bus\Batchable;
 
 class BatchOrchestrator
 {
+    /**
+     * The main entry point for executing a batch job instance.
+     */
     public function execute(JobInstance $instance): void
     {
         $instance->update(['status' => 'loading_data', 'started_at' => now()]);
-        
         $dir = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}";
         Storage::makeDirectory($dir);
 
         try {
-            // 1. Prepare the local source.csv file
+            // 1. Ingest data to local source.csv
             $totalRecords = $this->ingestToLocalFile($instance, $dir);
             
-            // 2. Validate the specific file against the Template Mapping (Contract)
-            $this->validateInstanceSchema($instance, $dir);
+            // 2. SCHEMA VALIDATION (The "Gatekeeper")
+            $this->validateContract($instance, $dir);
 
-            $instance->update([
-                'status' => 'dispatching', 
-                'total_records' => $totalRecords
-            ]);
-
+            $instance->update(['status' => 'dispatching', 'total_records' => $totalRecords]);
             $this->dispatchChunks($instance, $dir);
 
         } catch (\Exception $e) {
@@ -39,55 +38,54 @@ class BatchOrchestrator
     }
 
     /**
+     * Validates that the ingested data contains all columns required by the Template's mapping configuration.
+     */
+    protected function validateContract(JobInstance $instance, string $dir): void
+    {
+        $template = $instance->template;
+        $path = Storage::path("{$dir}/source.csv");
+        $csv = Reader::createFromPath($path, 'r');
+        $csv->setHeaderOffset(0);
+        
+        $actualHeaders = $csv->getHeader();
+        $requiredHeaders = array_keys($template->column_mapping);
+
+        $missing = array_diff($requiredHeaders, $actualHeaders);
+
+        if (!empty($missing)) {
+            throw new \Exception("Data inconsistency: The source is missing columns required by the template mapping: " . implode(', ', $missing));
+        }
+    }
+
+    /**
      * Ingests data from the external source to a local CSV file, returning the total record count.
      */
     protected function ingestToLocalFile(JobInstance $instance, string $dir): int
     {
         $template = $instance->template;
-        $source = $template->dataSource; // Relationship to public.data_sources
-        $localPath = Storage::path("{$dir}/source.csv");
+        $config = $template->source_config;
 
-        // Case 1: Manual Upload
-        if ($source->type === 'upload') {
-            // If the instance already has the file in its directory, we use it directly.
-            // Otherwise, we copy the base_source from the template.
-            $templatePath = "templates/{$template->id}/base_source.csv";
-            if (Storage::exists($templatePath)) {
-                Storage::copy($templatePath, "{$dir}/source.csv");
-            }
-            
-            $reader = Reader::createFromPath($localPath, 'r');
-            $reader->setHeaderOffset(0);
-            $this->initializeResultFiles($dir, $reader->getHeader());
-            return count($reader);
+        // 1. Identify where the source file is
+        if (!isset($config['file_path'])) {
+            throw new \Exception("Template configuration error: 'file_path' is missing in source_config.");
         }
 
-        // Case 2: External Sources (SFTP, DB, API)
-        $connector = DataSourceFactory::make($source->type);
-        $writer = Writer::createFromPath($localPath, 'w+');
-        
-        // Resolve credentials from DataSource and patterns from Template
-        $mergedConfig = array_merge(
-            json_decode($source->connection_settings, true) ?? [],
-            $template->source_config ?? [],
-            $template->job_specific_config ?? []
-        );
+        $sourcePath = $config['file_path']; // e.g., 'templates/discovery_1_1771639662.csv'
+        $destinationPath = "{$dir}/source.csv"; // e.g., 'jobs/uuid/source.csv'
 
-        $resolvedConfig = $this->resolvePlaceholders($mergedConfig);
-
-        $count = 0;
-        foreach ($connector->fetchData($resolvedConfig) as $row) {
-            $rowData = (array) $row;
-            if ($count === 0) {
-                $headers = array_keys($rowData);
-                $this->initializeResultFiles($dir, $headers);
-                $writer->insertOne($headers);
-            }
-            $writer->insertOne($rowData);
-            $count++;
+        // 2. Copy the file from templates to the working job directory
+        if (Storage::exists($sourcePath)) {
+            Storage::copy($sourcePath, $destinationPath);
+        } else {
+            throw new \Exception("Source file not found at: {$sourcePath}");
         }
 
-        return $count;
+        // 3. Count records for the progress bar
+        $fullPath = Storage::path($destinationPath);
+        $csv = Reader::createFromPath($fullPath, 'r');
+        $csv->setHeaderOffset(0);
+
+        return count($csv);
     }
 
     /**
@@ -111,24 +109,45 @@ class BatchOrchestrator
         }
     }
 
+    /**
+     * Dispatches processing jobs for each chunk of the source data.
+     */
     protected function dispatchChunks(JobInstance $instance, string $dir): void
     {
         $csvPath = Storage::path("{$dir}/source.csv");
         $csv = Reader::createFromPath($csvPath, 'r');
-        $csv->setHeaderOffset(0); 
+        $csv->setHeaderOffset(0);
 
-        $chunk = [];
+        // 1. Collect all records into an array
+        $allRecords = [];
         foreach ($csv->getRecords() as $record) {
-            $chunk[] = $record;
-            
-            if (count($chunk) === 100) {
-                ProcessBatchChunk::dispatch($instance->id, $chunk);
-                $chunk = [];
-            }
+            $allRecords[] = $record;
         }
 
-        if (!empty($chunk)) {
-            ProcessBatchChunk::dispatch($instance->id, $chunk);
+        if (empty($allRecords)) {
+            throw new \Exception("No records found in source file to process.");
+        }
+
+        // 2. Initialize the Batch with Callbacks
+        $batch = Bus::batch([])
+            ->then(function (\Illuminate\Bus\Batch $batch) use ($instance) {
+                $instance->update([
+                    'status' => 'completed',
+                    'completed_at' => now()
+                ]);
+            })
+            ->catch(function (\Illuminate\Bus\Batch $batch, \Throwable $e) use ($instance) {
+                $instance->update([
+                    'status' => 'failed',
+                    'error_log' => $e->getMessage()
+                ]);
+            })
+            ->name("Batch Job: {$instance->id}")
+            ->dispatch();
+
+        // 3. Add jobs to the batch in chunks of 100
+        foreach (array_chunk($allRecords, 100) as $chunk) {
+            $batch->add(new \App\Modules\Connectors\Jobs\ProcessBatchChunk($instance->id, $chunk));
         }
     }
 
@@ -141,7 +160,7 @@ class BatchOrchestrator
         Storage::put("{$dir}/results_failed.csv", $headerStr);
     }
 
-    protected function resolvePlaceholders(array $config): array
+    public function resolvePlaceholders(array $config): array
     {
         $now = now();
         $placeholders = [

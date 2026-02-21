@@ -43,6 +43,8 @@ class JobTemplate extends Model
         'job_specific_config' => 'json',
         'column_mapping'      => 'json',
         'workflow_steps'      => 'json',
+        'expected_columns'    => 'json', 
+        'source_config'       => 'json', 
         'is_active'           => 'boolean',
         'is_scheduled'        => 'boolean',
         'next_run_at'         => 'datetime',
