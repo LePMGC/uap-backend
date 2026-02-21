@@ -13,13 +13,30 @@ class JobTemplate extends Model
 
     protected $fillable = [
         'name',
-        'user_id',
         'provider_instance_id',
         'data_source_id',
+        'user_id',
+
+        // Core configuration
         'job_specific_config',
         'column_mapping',
         'workflow_steps',
-        'is_active'
+
+        // Source contract layer
+        'source_config',
+        'expected_columns',
+
+        // Activation
+        'is_active',
+
+        // Scheduling
+        'is_scheduled',
+        'cron_expression',
+        'next_run_at',
+        'timezone',
+        'schedule_active',
+        'starts_at',
+        'ends_at',
     ];
 
     protected $casts = [
@@ -27,6 +44,10 @@ class JobTemplate extends Model
         'column_mapping'      => 'json',
         'workflow_steps'      => 'json',
         'is_active'           => 'boolean',
+        'is_scheduled'        => 'boolean',
+        'next_run_at'         => 'datetime',
+        'starts_at'           => 'datetime',
+        'ends_at'             => 'datetime',
     ];
 
     /**

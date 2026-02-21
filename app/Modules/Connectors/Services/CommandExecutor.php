@@ -6,7 +6,6 @@ use App\Modules\Connectors\Models\ProviderInstance;
 use App\Modules\Connectors\Models\CommandLog;
 use App\Modules\Connectors\Providers\ProviderFactory;
 use Illuminate\Support\Facades\File;
-use Illuminate\Support\Str;
 use Exception;
 
 class CommandExecutor
@@ -14,11 +13,17 @@ class CommandExecutor
     /**
      * Execute a command against a provider instance.
      */
-    public function execute(int $instanceId, string $commandName, array $userInput, int $userId, ?string $jobInstanceId = null): CommandLog
-    {
+    public function execute(
+        int $instanceId, 
+        string $commandName, 
+        array $userInput, 
+        int $userId, 
+        ?string $jobInstanceId = null
+    ): CommandLog {
         $instance = ProviderInstance::findOrFail($instanceId);
         $blueprint = $this->getBlueprint($instance->category_slug, $commandName);
 
+        // Create the log entry immediately to track the "Started" state
         $log = CommandLog::create([
             'user_id' => $userId,
             'provider_instance_id' => $instanceId,
@@ -32,9 +37,15 @@ class CommandExecutor
         $startTime = microtime(true);
 
         try {
+            // 1. Prepare Payload: Merge system defaults with user-mapped data
             $finalParams = $this->preparePayload($blueprint, $userInput, $instance);
+            
+            // 2. Validate: Ensure all required parameters from the blueprint are present
+            $this->validateRequiredParams($blueprint, $finalParams);
+
             $log->update(['request_payload' => $finalParams]);
 
+            // 3. Provider Factory: Create the specific driver (e.g., Rest, Soap, etc.)
             $provider = ProviderFactory::make(
                 $instance->connection_settings, 
                 config("providers.{$instance->category_slug}")
@@ -42,6 +53,7 @@ class CommandExecutor
 
             $result = $provider->execute($commandName, $finalParams);
 
+            // 4. Update Log with standardized response data
             $log->update([
                 'response_payload'  => $result['data'] ?? [], 
                 'raw_response'      => $result['raw'] ?? null,
@@ -63,39 +75,8 @@ class CommandExecutor
     }
 
     /**
-     * Scans the directory for all available command names in a category.
-     */
-    public function getAvailableCommandNames(string $slug): array
-    {
-        $directory = app_path("Modules/Connectors/Blueprints/{$slug}");
-
-        if (!File::isDirectory($directory)) {
-            return [];
-        }
-
-        return collect(File::files($directory))
-            ->map(fn($file) => $file->getBasename('.php'))
-            ->toArray();
-    }
-
-    /**
-     * Retrieves all blueprints for a category as an associative array.
-     * Useful for bulk permission checking.
-     */
-    public function getAllBlueprints(string $slug): array
-    {
-        $names = $this->getAvailableCommandNames($slug);
-        $blueprints = [];
-
-        foreach ($names as $name) {
-            $blueprints[$name] = $this->getBlueprint($slug, $name);
-        }
-
-        return $blueprints;
-    }
-
-    /**
-     * Resolves system placeholders and merges with user data.
+     * Refined Payload Preparation
+     * Ensures system params act as defaults, but user input (from mapping) takes priority.
      */
     protected function preparePayload(array $blueprint, array $userInput, $instance): array
     {
@@ -104,18 +85,38 @@ class CommandExecutor
         foreach ($systemParams as $key => $value) {
             $systemParams[$key] = match ($value) {
                 '{auto_gen_id}'      => now()->format('YmdHis') . str_pad(mt_rand(0, 999999), 6, '0', STR_PAD_LEFT),
-                '{auto_gen_iso8601}' => now()->format('Ymd\TH:i:s+0000'),
+                '{auto_gen_iso8601}' => now()->format('Ymd\\TH:i:s+0000'),
                 '{host_name}'        => $instance->name,
                 '{origin_node_type}' => 'EXT',
                 default              => $value
             };
         }
 
-        return array_merge($systemParams, $userInput);
+        // Priority: User Input (mapped columns) > System Params (defaults)
+        return array_merge($systemParams, array_filter($userInput, fn($v) => !is_null($v)));
     }
 
     /**
-     * Loads the specific command file from the directory structure.
+     * Defensive Check: Ensure the batch job doesn't send incomplete requests
+     */
+    protected function validateRequiredParams(array $blueprint, array $payload): void
+    {
+        $required = $blueprint['required_params'] ?? [];
+        $missing = [];
+
+        foreach ($required as $param) {
+            if (!isset($payload[$param]) || $payload[$param] === '') {
+                $missing[] = $param;
+            }
+        }
+
+        if (!empty($missing)) {
+            throw new Exception("Missing required blueprint parameters: " . implode(', ', $missing));
+        }
+    }
+
+    /**
+     * Original helper to load blueprints from the directory
      */
     public function getBlueprint(string $slug, string $command): array
     {

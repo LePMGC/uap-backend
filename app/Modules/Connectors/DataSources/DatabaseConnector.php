@@ -18,12 +18,15 @@ class DatabaseConnector implements DataSourceInterface
         }
     }
 
+    // Inside DatabaseConnector.php -> fetchData
     public function fetchData(array $config): \Generator
     {
         $connection = $this->getTempConnection($config);
         
-        // Use cursor to fetch one row at a time from the external DB
-        foreach ($connection->table($config['table'])->cursor() as $row) {
+        // Ensure 'table' comes from the Template's config passed through
+        $table = $config['table'] ?? throw new \Exception("Database table not specified.");
+
+        foreach ($connection->table($table)->cursor() as $row) {
             yield (array) $row;
         }
     }

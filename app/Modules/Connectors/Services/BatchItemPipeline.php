@@ -3,6 +3,7 @@
 namespace App\Modules\Connectors\Services;
 
 use App\Modules\Connectors\Models\JobInstance;
+use App\Modules\Connectors\Models\CommandLog;
 use Illuminate\Support\Facades\Log;
 
 class BatchItemPipeline
@@ -14,44 +15,49 @@ class BatchItemPipeline
     /**
      * Process a single row through the command sequence.
      */
-    public function process(JobInstance $instance, array $rowData): bool
+    public function process(JobInstance $instance, array $rowData): CommandLog
     {
         $template = $instance->template;
         $mapping = $template->column_mapping;
-        $workflow = $template->workflow_steps; // Future-proof for multiple commands
+        $workflow = $template->workflow_steps;
 
-        try {
-            // 1. Map Raw Data to Command Parameters
-            $userInput = $this->mapRowToInput($rowData, $mapping);
+        // 1. Map Raw Data to Blueprint parameters
+        $userInput = $this->mapRowToInput($rowData, $mapping);
 
-            // 2. Execute the Workflow (Current implementation: Single command)
-            foreach ($workflow as $commandName) {
-                $this->executor->execute(
-                    $template->provider_instance_id,
-                    $commandName,
-                    $userInput,
-                    $template->user_id,
-                    $instance->id
-                );
+        $lastLog = null;
+
+        // 2. Execute the Workflow steps sequentially
+        foreach ($workflow as $commandName) {
+            // execute() returns a CommandLog object
+            $lastLog = $this->executor->execute(
+                $template->provider_instance_id,
+                $commandName,
+                $userInput,
+                $template->user_id,
+                $instance->id
+            );
+
+            // Optional: If a step fails, you might want to stop the workflow for this row
+            if (!$lastLog->is_successful) {
+                break; 
             }
-
-            return true;
-        } catch (\Exception $e) {
-            Log::error("Batch Row Processing Failed for Instance {$instance->id}: " . $e->getMessage());
-            return false;
         }
+
+        return $lastLog;
     }
 
     /**
-     * Translates CSV/DB columns to Blueprint parameters based on mapping.
+     * Translates CSV/DB columns to Blueprint parameters based on the Template's contract.
      */
     protected function mapRowToInput(array $rowData, array $mapping): array
     {
         $mapped = [];
-        foreach ($mapping as $commandParam => $sourceHeader) {
-            // Use the header to find the value in the row
-            $mapped[$commandParam] = $rowData[$sourceHeader] ?? null;
+        
+        foreach ($mapping as $sourceHeader => $blueprintParam) {
+            // Use null coalescing to prevent "Undefined index" errors if a row is malformed
+            $mapped[$blueprintParam] = $rowData[$sourceHeader] ?? null;
         }
+
         return $mapped;
     }
 }

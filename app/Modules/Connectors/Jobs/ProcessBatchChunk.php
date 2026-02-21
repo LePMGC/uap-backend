@@ -21,19 +21,20 @@ class ProcessBatchChunk implements ShouldQueue
         protected array $rows
     ) {}
 
+    /**
+     * This job processes a chunk of rows for a given JobInstance, executing the command pipeline for each row and writing results to local CSV files.
+     */
     public function handle(BatchItemPipeline $pipeline): void
     {
-        $instance = JobInstance::find($this->instanceId);
+        $instance = JobInstance::with('template')->find($this->instanceId);
         
-        // Check if instance exists or if the user cancelled the batch via Laravel Horizon/UI
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
             return;
         }
 
         $dir = config('connectors.batch.storage_path', 'jobs') . "/{$this->instanceId}";
         
-        // Open local result files in "append" mode
-        // We use standard PHP fopen for high-performance streaming writes
+        // Using high-performance fopen for streaming results to local storage
         $successFile = fopen(Storage::path("{$dir}/results_success.csv"), 'a');
         $failedFile  = fopen(Storage::path("{$dir}/results_failed.csv"), 'a');
 
@@ -42,14 +43,13 @@ class ProcessBatchChunk implements ShouldQueue
 
         foreach ($this->rows as $row) {
             try {
-                // Process through the pipeline (Mapping -> Execution -> Logging)
+                // The pipeline uses $instance->template->column_mapping internally
                 $log = $pipeline->process($instance, $row);
                 
-                // Prepare the result row: Original Data + Response Metadata
                 $resultRow = array_merge($row, [
-                    'batch_status_code' => $log->response_code ?? 'N/A',
+                    'batch_status_code'   => $log->response_code ?? 'N/A',
                     'batch_is_successful' => $log->is_successful ? 'YES' : 'NO',
-                    'batch_error_message' => !$log->is_successful ? ($log->response_payload['error'] ?? 'Unknown Error') : '',
+                    'batch_error_message' => !$log->is_successful ? ($log->response_payload['response_message'] ?? 'Unknown Error') : '',
                 ]);
 
                 if ($log->is_successful) {
@@ -60,16 +60,19 @@ class ProcessBatchChunk implements ShouldQueue
                     $localFailed++;
                 }
             } catch (\Exception $e) {
-                // Catch any unexpected pipeline crashes per row
                 $localFailed++;
-                fputcsv($failedFile, array_merge($row, ['batch_error_message' => $e->getMessage()]));
+                fputcsv($failedFile, array_merge($row, [
+                    'batch_status_code'   => '500',
+                    'batch_is_successful' => 'NO',
+                    'batch_error_message' => $e->getMessage()
+                ]));
             }
         }
 
         fclose($successFile);
         fclose($failedFile);
 
-        // Perform a single atomic update to the database for this entire chunk
+        // Atomic increment of counters for the job instance
         $instance->increment('processed_records', $localProcessed);
         $instance->increment('failed_records', $localFailed);
     }

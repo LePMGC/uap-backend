@@ -20,12 +20,18 @@ class SftpConnector implements DataSourceInterface
         }
     }
 
+    // Inside SftpConnector.php -> fetchData
     public function fetchData(array $config): \Generator
     {
         $config['driver'] = 'sftp';
-        
         $disk = Storage::build($config);
-        $stream = $disk->readStream($config['file_path']);
+
+        // If 'file_path' contains a pattern or we need to find the latest file
+        $targetFile = $config['file_path']; 
+        
+        // Logic to resolve patterns like {Y-m-d} should happen in Orchestrator 
+        // but the connector must handle the stream correctly.
+        $stream = $disk->readStream($targetFile);
         
         $csv = Reader::createFromStream($stream);
         $csv->setHeaderOffset(0);
