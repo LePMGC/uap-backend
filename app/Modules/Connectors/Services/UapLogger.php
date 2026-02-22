@@ -2,50 +2,50 @@
 
 namespace App\Modules\Connectors\Services;
 
-use Illuminate\Support\Facades\Log;
+use App\Modules\Connectors\Jobs\AsyncUapLoggerJob;
 use Illuminate\Support\Facades\Auth;
 use Throwable;
 
 class UapLogger
 {
+    /**
+     * Dispatches a logging job to the queue to prevent blocking the main process.
+     */
     public static function log(
         string $module, 
         string $event, 
         string $level = 'info', 
         array $context = [], 
-        ?string $status = 'SUCCESS'
+        ?string $status = 'SUCCESS',
+        ?string $manualTraceId = null // Add this parameter
     ) {
+        // Priority: Manual ID (from Worker) > Request Header (from API) > PID (Fallback)
+        $traceId = $manualTraceId ?? request()->header('X-Request-ID') ?? 'CLI-' . getmypid();
+
         $data = [
             'timestamp'  => now()->format('Y-m-d H:i:s.u'),
             'module'     => strtoupper($module),
             'event'      => strtoupper($event),
             'status'     => strtoupper($status),
             'user'       => Auth::user()?->username ?? 'SYSTEM',
-            'session_id' => request()->header('X-Request-ID') ?? (request()->hasSession() ? session()->getId() : 'N/A'),
+            'trace_id'   => $traceId, 
             'client_ip'  => request()->ip(),
             'details'    => $context,
         ];
 
-        $payload = json_encode($data);
-
-        try {
-            // Force a check if the channel exists to avoid confusing errors
-            Log::channel('uap')->log($level, $payload);
-        } catch (Throwable $e) {
-            // If this triggers, check storage/logs/laravel.log for the reason
-            Log::error("UAP_LOGGER_CRITICAL_FAILURE", [
-                'reason' => $e->getMessage(),
-                'path' => '/var/log/uap/',
-                'original_data' => $data
-            ]);
-        }
+        AsyncUapLoggerJob::dispatch($data, $level);
     }
 
-    public static function info($module, $event, $context = []) {
-        self::log($module, $event, 'info', $context, 'SUCCESS');
+    // Update helper methods to accept the optional traceId
+    public static function info($module, $event, $context = [], $traceId = null) {
+        self::log($module, $event, 'info', $context, 'SUCCESS', $traceId);
     }
 
-    public static function error($module, $event, $context = [], $status = 'FAILURE') {
-        self::log($module, $event, 'error', $context, $status);
+    public static function error($module, $event, $context = []) {
+        self::log($module, $event, 'error', $context, 'ERROR');
+    }
+    
+    public static function warning($module, $event, $context = []) {
+        self::log($module, $event, 'warning', $context, 'WARNING');
     }
 }

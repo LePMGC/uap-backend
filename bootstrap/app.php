@@ -15,16 +15,15 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        // Add these aliases so the 'permission' and 'role' middleware work
+        // Add your Request ID middleware to the API group
+        $middleware->api(append: [
+            \App\Http\Middleware\AssignRequestId::class,
+        ]);
+
         $middleware->alias([
             'role' => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
-            'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
         ]);
-
-        $middleware->redirectGuestsTo(function () {
-            return null; 
-        });
     })
     ->withExceptions(function (Exceptions $exceptions) {
         // This ensures the exception isn't handled by the default "Pretty Error" page

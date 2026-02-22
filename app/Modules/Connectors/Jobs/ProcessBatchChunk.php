@@ -17,50 +17,55 @@ class ProcessBatchChunk implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    // These properties must be declared
-    protected string $instanceId;
-    protected array $rows;
+    /**
+     * Properties mapped from the Orchestrator
+     */
+    protected $instance;
+    protected array $chunk;
+    protected ?string $traceId;
 
     /**
      * Create a new job instance.
      */
-    public function __construct(string $instanceId, array $rows)
+    public function __construct($instance, array $chunk, ?string $traceId = null)
     {
-        $this->instanceId = $instanceId;
-        $this->rows = $rows;
+        $this->instance = $instance;
+        $this->chunk = $chunk;
+        $this->traceId = $traceId;
     }
 
+    /**
+     * Execute the job.
+     */
     public function handle(BatchItemPipeline $pipeline): void
     {
-        $instance = JobInstance::with('template')->find($this->instanceId);
+        // Refresh instance to get latest status and template
+        $instance = JobInstance::with('template')->find($this->instance->id);
         
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
             return;
         }
 
-        // LOG: Chunk processing started
+        // LOG: Chunk processing started using the shared Trace ID
         UapLogger::info('BatchEngine', 'CHUNK_PROCESS_STARTED', [
-            'instance_id' => $this->instanceId,
-            'chunk_size'  => count($this->rows),
-            'batch_id'    => $this->batch()?->id
-        ]);
+            'instance_id' => $instance->id,
+            'chunk_size'  => count($this->chunk),
+        ], $this->traceId);
 
-        $dir = config('connectors.batch.storage_path', 'jobs') . "/{$this->instanceId}";
+        $dir = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}";
         
-        $successPath = "{$dir}/results_success.csv";
-        $failedPath  = "{$dir}/results_failed.csv";
-
-        // Open streams using Laravel's Storage or PHP's fopen
-        $successFile = fopen(Storage::path($successPath), 'a');
-        $failedFile  = fopen(Storage::path($failedPath), 'a');
+        // Open files for appending results
+        $successFile = fopen(Storage::path("{$dir}/results_success.csv"), 'a');
+        $failedFile = fopen(Storage::path("{$dir}/results_failed.csv"), 'a');
 
         $localProcessed = 0;
         $localFailed = 0;
 
-        foreach ($this->rows as $row) {
+        foreach ($this->chunk as $row) {
             try {
-                // Pass the row through the pipeline to the Provider
-                $log = $pipeline->process($instance, $row);
+                // Execute the pipeline for this specific row
+                // Pass traceId to the pipeline so CommandExecutor can use it too
+                $log = $pipeline->process($instance, $row, $this->traceId);
 
                 $resultRow = array_merge($row, [
                     'batch_status_code'   => $log->response_code,
@@ -79,10 +84,10 @@ class ProcessBatchChunk implements ShouldQueue
                 $localFailed++;
 
                 UapLogger::error('BatchEngine', 'ROW_PROCESSING_EXCEPTION', [
-                    'instance_id' => $this->instanceId,
+                    'instance_id' => $instance->id,
                     'error'       => $e->getMessage(),
                     'row_data'    => $row 
-                ]);
+                ], $this->traceId);
 
                 fputcsv($failedFile, array_merge($row, [
                     'batch_status_code'   => '500',
@@ -95,13 +100,14 @@ class ProcessBatchChunk implements ShouldQueue
         fclose($successFile);
         fclose($failedFile);
 
+        // Update main instance stats
         $instance->increment('processed_records', $localProcessed);
         $instance->increment('failed_records', $localFailed);
 
         UapLogger::info('BatchEngine', 'CHUNK_PROCESS_COMPLETED', [
-            'instance_id' => $this->instanceId,
+            'instance_id' => $instance->id,
             'processed'   => $localProcessed,
             'failed'      => $localFailed
-        ]);
+        ], $this->traceId);
     }
 }

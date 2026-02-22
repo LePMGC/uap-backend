@@ -15,7 +15,7 @@ class BatchItemPipeline
     /**
      * Process a single row through the command sequence.
      */
-    public function process(JobInstance $instance, array $rowData): CommandLog
+    public function process(JobInstance $instance, array $row, ?string $traceId = null)
     {
         $template = $instance->template;
         $mapping = $template->column_mapping;
@@ -34,7 +34,8 @@ class BatchItemPipeline
                 $commandName,
                 $userInput,
                 $template->user_id,
-                $instance->id
+                $instance->id,
+                $traceId
             );
 
             // Optional: If a step fails, you might want to stop the workflow for this row

@@ -180,20 +180,22 @@ class BatchJobController extends Controller
     {
         $template = JobTemplate::findOrFail($templateId);
 
-        // 1. Create a Job Instance
+        // Capture the Trace ID from the middleware-enriched header
+        $traceId = request()->header('X-Request-ID');
+
         $instance = JobInstance::create([
             'job_template_id' => $template->id,
             'status' => 'pending',
             'user_id' => auth()->id(),
         ]);
 
-        // 2. Pass to Orchestrator to begin ingestion and execution
-        // The Orchestrator will use the connectors to pull the file/data
-        $this->orchestrator->execute($instance);
+        // Pass the traceId to the orchestrator
+        $this->orchestrator->execute($instance, $traceId);
 
         return response()->json([
             'message' => 'Job execution started',
-            'instance_id' => $instance->id
+            'instance_id' => $instance->id,
+            'trace_id' => $traceId // Useful for the frontend to track immediately
         ]);
     }
 

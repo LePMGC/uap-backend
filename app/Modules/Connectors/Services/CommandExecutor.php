@@ -18,12 +18,16 @@ class CommandExecutor
         string $commandName, 
         array $userInput, 
         int $userId, 
-        ?string $jobInstanceId = null
+        ?string $jobInstanceId = null,
+        ?string $traceId = null
     ): CommandLog {
+         
         $instance = ProviderInstance::findOrFail($instanceId);
+        
+        // 1. Get the blueprint array
         $blueprint = $this->getBlueprint($instance->category_slug, $commandName);
 
-        // Create the log entry immediately to track the "Started" state
+        // Create the log entry immediately
         $log = CommandLog::create([
             'user_id' => $userId,
             'provider_instance_id' => $instanceId,
@@ -37,60 +41,66 @@ class CommandExecutor
         $startTime = microtime(true);
 
         try {
-            // 1. Prepare Payload: Merge system defaults with user-mapped data
+            // 2. Prepare Payload
             $finalParams = $this->preparePayload($blueprint, $userInput, $instance);
 
-            // Log the prepared request
+            // 3. Log the prepared request with Trace ID
             UapLogger::info('ProviderInterface', 'API_REQUEST_PREPARED', [
                 'job_instance_id' => $jobInstanceId,
                 'command' => $commandName,
                 'provider' => $instance->name,
-                'msisdn' => $finalParams['msisdn'] ?? $finalParams['subscriberNumber'] ?? $finalParams['MSISDN'] ??  'N/A'
-            ]);
-            
-            // 2. Validate: Ensure all required parameters from the blueprint are present
-            $this->validateRequiredParams($blueprint, $finalParams);
+                'msisdn' => $userInput['msisdn'] ?? 'N/A'
+            ], $traceId);
 
-            $log->update(['request_payload' => $finalParams]);
-
-            // 3. Provider Factory: Create the specific driver (e.g., Rest, Soap, etc.)
+            // 4. Provider Factory: Create the specific driver (e.g., Rest, Soap, etc.)
             $provider = ProviderFactory::make(
                 $instance->connection_settings, 
                 config("providers.{$instance->category_slug}")
             );
+            
+            // 5. Execute
+            $response = $provider->execute($commandName, $finalParams);
 
-            $result = $provider->execute($commandName, $finalParams);
+            $duration = round((microtime(true) - $startTime) * 1000);
 
-            // Log the response outcome
-            UapLogger::log('ProviderInterface', 'API_RESPONSE_RECEIVED', 
-                $result['success'] ? 'info' : 'error', [
-                'job_instance_id' => $jobInstanceId,
-                'status_code' => $result['code'],
-                'success' => $result['success']
-            ], $result['success'] ? 'SUCCESS' : 'FAILURE');
-
-            // 4. Update Log with standardized response data
+            // 6. Update Log
             $log->update([
-                'response_payload'  => $result['data'] ?? [], 
-                'raw_response'      => $result['raw'] ?? null,
-                'is_successful'     => $result['success'] ?? false,
-                'response_code'     => $result['code'] ?? null,
+                'response_payload'  => $response['data'] ?? [], 
+                'raw_response'      => $response['raw'] ?? null,
+                'is_successful'     => $response['success'] ?? false,
+                'response_code'     => $response['code'] ?? null,
                 'ended_at'          => now(),
                 'execution_time_ms' => (microtime(true) - $startTime) * 1000,
             ]);
 
+            UapLogger::info('ProviderInterface', 'API_RESPONSE_RECEIVED', [
+                'job_instance_id' => $jobInstanceId,
+                'status_code' => $response['code'] ?? null,
+                'success' => $response['success'] ?? false
+            ], $traceId);
+
             return $log;
-        } catch (\Exception $e) {
+
+        } catch (Exception $e) {
+            $duration = round((microtime(true) - $startTime) * 1000);
+            
             $log->update([
+                'response_message' => "System Error: " . $e->getMessage(),
                 'is_successful' => false,
-                'response_payload' => ['error' => $e->getMessage()],
-                'ended_at' => now(),
+                'completed_at' => now(),
+                'duration_ms' => $duration,
             ]);
+
+            UapLogger::error('ProviderInterface', 'EXECUTION_FAILED', [
+                'job_instance_id' => $jobInstanceId,
+                'error' => $e->getMessage()
+            ], $traceId);
+
             throw $e;
         }
     }
 
-    /**
+        /**
      * Refined Payload Preparation
      * Ensures system params act as defaults, but user input (from mapping) takes priority.
      */

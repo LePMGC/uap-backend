@@ -17,17 +17,13 @@ class BatchOrchestrator
     /**
      * The main entry point for executing a batch job instance.
      */
-    /**
-     * The main entry point for executing a batch job instance.
-     */
-    public function execute(JobInstance $instance): void
-    {
-        // 1. Log job start
+    public function execute(JobInstance $instance, ?string $traceId = null): void{
+        // Use the traceId in our logging calls
         UapLogger::info('BatchEngine', 'JOB_STARTED', [
             'instance_id' => $instance->id,
             'template_id' => $instance->job_template_id,
             'trigger'     => $instance->trigger_type
-        ]);
+        ], $traceId); 
 
         $instance->update(['status' => 'loading_data', 'started_at' => now()]);
         $dir = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}";
@@ -40,8 +36,7 @@ class BatchOrchestrator
             UapLogger::info('BatchEngine', 'DATA_INGESTED', [
                 'instance_id' => $instance->id,
                 'total_records' => $totalRecords,
-                'directory' => $dir
-            ]);
+            ], $traceId);
 
             // 3. Validate Contract (Ensure CSV columns match Template mapping)
             $this->validateContract($instance, $dir);
@@ -59,7 +54,7 @@ class BatchOrchestrator
             ]);
 
             // 6. Split data into chunks and send to Worker Queues
-            $this->dispatchChunks($instance, $dir);
+            $this->dispatchChunks($instance, $dir, $traceId);
 
             UapLogger::info('BatchEngine', 'JOB_DISPATCHED', [
                 'instance_id' => $instance->id,
@@ -158,60 +153,60 @@ class BatchOrchestrator
     /**
      * Dispatches processing jobs for each chunk of the source data.
      */
-    protected function dispatchChunks(JobInstance $instance, string $dir): void
+    protected function dispatchChunks(JobInstance $instance, string $dir, ?string $traceId = null): void
     {
         $csvPath = Storage::path("{$dir}/source.csv");
-        $csv = Reader::createFromPath($csvPath, 'r');
-        $csv->setHeaderOffset(0);
+        $reader = Reader::createFromPath($csvPath, 'r');
+        $reader->setHeaderOffset(0);
 
-        // 1. Collect all records into an array
-        $allRecords = [];
-        foreach ($csv->getRecords() as $record) {
-            $allRecords[] = $record;
+        $jobs = [];
+        $chunkSize = 100;
+        $chunk = [];
+
+        foreach ($reader->getRecords() as $record) {
+            $chunk[] = $record;
+            if (count($chunk) === $chunkSize) {
+                $jobs[] = new ProcessBatchChunk($instance, $chunk, $traceId);
+                $chunk = [];
+            }
+        }
+        if (!empty($chunk)) {
+            $jobs[] = new ProcessBatchChunk($instance, $chunk, $traceId);
         }
 
-        if (empty($allRecords)) {
-            throw new \Exception("No records found in source file to process.");
-        }
-
-        // 2. Initialize the Batch with Callbacks
-        $batch = Bus::batch([])
-            ->then(function (\Illuminate\Bus\Batch $batch) use ($instance) {
-                // 1. Update Database Status
+        // Use Laravel Bus Batching to handle the lifecycle
+        $batch = Bus::batch($jobs)
+            ->then(function ($batch) use ($instance, $traceId) {
+                // ALL CHUNKS FINISHED SUCCESSFULLY
                 $instance->update([
                     'status' => 'completed',
                     'completed_at' => now()
                 ]);
 
-                // 2. TELECOM LOGGING: Log successful completion of the entire batch
-                \App\Modules\Connectors\Services\UapLogger::info('BatchEngine', 'JOB_COMPLETED', [
-                    'instance_id'   => $instance->id,
-                    'total_records' => $instance->total_records,
-                    'duration_sec'  => now()->diffInSeconds($instance->started_at),
-                ]);
+                UapLogger::info('BatchEngine', 'JOB_COMPLETED_SUCCESSFULLY', [
+                    'instance_id' => $instance->id
+                ], $traceId);
             })
-            ->catch(function (\Illuminate\Bus\Batch $batch, \Throwable $e) use ($instance) {
-                // 1. Update Database Status
-                $instance->update([
-                    'status' => 'failed',
-                    'error_log' => $e->getMessage(),
-                    'completed_at' => now()
-                ]);
-
-                // 2. TELECOM LOGGING: Log the batch-level failure
-                \App\Modules\Connectors\Services\UapLogger::error('BatchEngine', 'BATCH_PROCESSING_FAILED', [
+            ->catch(function ($batch, $e) use ($instance, $traceId) {
+                // THE BATCH FAILED
+                $instance->update(['status' => 'failed']);
+                
+                UapLogger::error('BatchEngine', 'BATCH_EXECUTION_ERROR', [
                     'instance_id' => $instance->id,
-                    'error'       => $e->getMessage()
-                ]);
+                    'error' => $e->getMessage()
+                ], $traceId);
             })
-            ->name("Batch Job: {$instance->id}")
+            ->finally(function ($batch) use ($instance) {
+                // Run any cleanup here if needed
+            })
+            ->name("Batch-Job-{$instance->id}")
             ->dispatch();
 
-
-        // 3. Add jobs to the batch in chunks of 100
-        foreach (array_chunk($allRecords, 100) as $chunk) {
-            $batch->add(new \App\Modules\Connectors\Jobs\ProcessBatchChunk($instance->id, $chunk));
-        }
+        // Link the Batch ID to your instance for tracking (optional but recommended)
+        $instance->update([
+            'status' => 'processing', // Move from dispatching to processing
+            'batch_id' => $batch->id
+        ]);
     }
 
     protected function initializeResultFiles(string $dir, array $headers): void

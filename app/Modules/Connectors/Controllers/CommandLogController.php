@@ -89,6 +89,8 @@ class CommandLogController extends Controller implements HasMiddleware
             'params_sent' => array_keys($request->params) // Log keys only for security
         ]);
 
+        $traceId = $request->header('X-Request-ID');
+
         $validated = $request->validate([
             'instance_id' => 'required|integer|exists:provider_instances,id',
             'command_name' => 'required|string',
@@ -101,7 +103,9 @@ class CommandLogController extends Controller implements HasMiddleware
                 $validated['instance_id'],
                 $validated['command_name'],
                 $validated['params'],
-                auth()->id()
+                auth()->id(),
+                null,
+                $traceId
             );
 
             // Return the resource so FE knows the response format (XML/MML) immediately
