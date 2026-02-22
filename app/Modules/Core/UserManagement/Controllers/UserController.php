@@ -113,12 +113,27 @@ class UserController extends Controller
 
     public function resetPassword(int $id): JsonResponse
     {
-        // Ensure only admins can do this (middleware already handles manage_users)
-        $tempPassword = $this->userService->resetPassword($id);
+        try {
+            $tempPassword = $this->userService->resetPassword($id);
 
-        return response()->json([
-            'message' => 'Password reset successful.',
-            'temporary_password' => $tempPassword
-        ]);
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Password reset successful.',
+                'temporary_password' => $tempPassword
+            ]);
+            
+        } catch (\RuntimeException $e) {
+            // Return 400 Bad Request or 403 Forbidden because the action is invalid for current config
+            return response()->json([
+                'status' => 'error',
+                'message' => $e->getMessage()
+            ], 400);
+            
+        } catch (\Exception $e) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'An unexpected error occurred.'
+            ], 500);
+        }
     }
 }

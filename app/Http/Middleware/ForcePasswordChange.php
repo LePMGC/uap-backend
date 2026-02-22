@@ -8,17 +8,16 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ForcePasswordChange
 {
-    /**
-     * Handle an incoming request.
-     */
     public function handle(Request $request, Closure $next): Response
     {
         $user = auth()->user();
+        
+        // 1. Check if the application is in Local Auth Mode
+        $isLocalMode = config('auth.uap_mode', 'local') === 'local';
 
-        // If user is authenticated and must change password
-        if ($user && $user->must_change_password) {
+        // 2. Only enforce if we are in Local Mode AND the user has the flag
+        if ($isLocalMode && $user && $user->must_change_password) {
             
-            // Allow access ONLY to the password change route and logout
             $allowedRoutes = [
                 'api/auth/change-password',
                 'api/auth/logout',

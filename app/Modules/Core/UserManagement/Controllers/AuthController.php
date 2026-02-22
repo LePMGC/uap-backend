@@ -36,7 +36,6 @@ class AuthController extends Controller
         // 1. LDAP/Local verification
         $authDriver = AuthDriverFactory::make();
         if (!$authDriver->authenticate($credentials['username'], $credentials['password'])) {
-            // LOG: Failed login attempt (Potential Brute Force)
             \App\Modules\Connectors\Services\UapLogger::error('Security', 'LOGIN_FAILED', [
                 'username' => $credentials['username'],
                 'ip' => $request->ip()
@@ -49,25 +48,21 @@ class AuthController extends Controller
         $user = User::where('username', $credentials['username'])->first();
 
         // --- JIT PROVISIONING ---
-        // If the user authenticated via LDAP but doesn't exist locally, create them.
         if (!$user) {
-
             $user = User::create([
                 'username'     => $credentials['username'],
                 'name'         => ucwords(str_replace(['.', '_'], ' ', $credentials['username'])),
                 'phone_number' => 'LDAP_PROVISIONED',
-                // Use Str::random(32) instead of str_random(32)
-                'password'     => Hash::make(Str::random(32)), 
+                'password'     => Hash::make(\Illuminate\Support\Str::random(32)), 
+                'must_change_password' => false, // LDAP users don't use local password reset flow
             ]);
 
-            // LOG: New user discovered and provisioned via LDAP
             \App\Modules\Connectors\Services\UapLogger::info('Security', 'USER_JIT_PROVISIONED', [
                 'username' => $credentials['username'],
                 'assigned_role' => 'operator',
                 'source' => 'LDAP_SERVER'
             ]);
 
-            // Assign the 'operator' role
             $user->assignRole('operator'); 
         }
 
@@ -86,35 +81,72 @@ class AuthController extends Controller
             'username' => $user->username
         ]);
 
+        // 5. Build the Response
+        $isLocalMode = config('auth.uap_mode', 'local') === 'local';
+
         return response()->json([
-            'access_token' => $token,
-            'token_type' => 'bearer',
-            'expires_in' => auth('api')->factory()->getTTL() * 60,
-            'must_change_password' => (bool) $user->must_change_password, // FE checks this
+            'access_token'  => $token,
+            /** * RESTORED: Refresh token is required for the FE 
+             * to stay logged in beyond the access token TTL 
+             */
+            'refresh_token' => auth('api')->refresh(), 
+            'token_type'    => 'bearer',
+            'expires_in'    => auth('api')->factory()->getTTL() * 60,
+            
+            // Security Flags
+            'must_change_password' => ($isLocalMode && $user->must_change_password),
+            'auth_mode'            => config('auth.uap_mode'),
+            
+            // User Context
             'user' => [
                 'username' => $user->username,
-                'name' => $user->name
+                'name'     => $user->name,
+                'role'     => $user->getRoleNames()->first(), // Useful for FE routing
             ]
-        ]);
-        }
-
-    protected function respondWithToken($token)
-    {
-        return response()->json([
-            'access_token' => $token,
-            'refresh_token' => auth('api')->refresh(), // Generates a new refreshable token
-            'token_type' => 'bearer',
-            'expires_in' => auth('api')->factory()->getTTL() * 60, // usually 15-60 mins
-            'refresh_expires_in' => config('jwt.refresh_ttl') * 60, // usually 2 weeks
         ]);
     }
 
     /**
-     * Refresh the JWT token. This endpoint can be called by the frontend when the access token is close to expiring.
+     * Get the token array structure.
+     *
+     * @param  string $token
+     * @return \Illuminate\Http\JsonResponse
+     */
+    protected function respondWithToken($token)
+    {
+        $user = auth('api')->user();
+        $isLocalMode = config('auth.uap_mode', 'local') === 'local';
+
+        return response()->json([
+            'access_token'  => $token,
+            'refresh_token' => auth('api')->refresh(), // New refresh token for the next cycle
+            'token_type'    => 'bearer',
+            'expires_in'    => auth('api')->factory()->getTTL() * 60,
+            
+            // Security & Mode Flags
+            'must_change_password' => ($isLocalMode && $user->must_change_password),
+            'auth_mode'            => config('auth.uap_mode'),
+            
+            // User Metadata
+            'user' => [
+                'username' => $user->username,
+                'name'     => $user->name,
+                'role'     => $user->getRoleNames()->first(),
+            ]
+        ]);
+    }
+
+    /**
+     * Refresh a token.
+     * * @return \Illuminate\Http\JsonResponse
      */
     public function refresh()
     {
-        return $this->respondWithToken(auth('api')->refresh());
+        // 1. Generate the new access token
+        $token = auth('api')->refresh();
+
+        // 2. Return consistent response with security flags
+        return $this->respondWithToken($token);
     }
 
     /**
@@ -134,6 +166,12 @@ class AuthController extends Controller
      */
     public function changePassword(Request $request)
     {
+        if (config('auth.uap_mode') !== 'local') {
+            return response()->json([
+                'error' => 'Self-service password change is not available for LDAP accounts.'
+            ], 403);
+        }
+
         $request->validate([
             'current_password' => 'required',
             'new_password' => 'required|min:8|confirmed|different:current_password',
