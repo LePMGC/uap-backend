@@ -355,4 +355,13 @@ class BatchJobController extends Controller
 
         return response()->json(['error' => 'Job is already finished or cannot be cancelled.'], 422);
     }
+
+    public function downloadReport(string $instanceId, Request $request)
+    {
+        $format = $request->query('format', 'xlsx'); // Default to xlsx for multi-sheet
+        $instance = JobInstance::with(['template.providerInstance', 'template.dataSource', 'executor'])
+            ->findOrFail($instanceId);
+
+        return $this->orchestrator->generateReport($instance, $format);
+    }
 }

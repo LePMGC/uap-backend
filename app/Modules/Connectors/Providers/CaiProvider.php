@@ -74,7 +74,7 @@ class CaiProvider extends BaseProvider
         return implode(':', $parts) . ';';
     }
 
-    public function parseResponse(array $commandDef, string $rawResponse): array
+    public function parseResponse(array $commandDef, string $rawResponse, array $userParams): array
     {
         // Extract the code using Regex from "RESP:0;" or "RESP:101:MSISDN..."
         preg_match('/RESP:(\d+)/', $rawResponse, $matches);

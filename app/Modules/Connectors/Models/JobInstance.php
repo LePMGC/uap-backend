@@ -7,6 +7,8 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use App\Modules\Core\UserManagement\Models\User;
 
 class JobInstance extends Model
 {
@@ -73,4 +75,10 @@ class JobInstance extends Model
 
     // Ensure this is visible in API responses
     protected $appends = ['progress_percentage'];
+
+    // Get job executor which is the user who initiated the job template linked to this instance
+    public function executor(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'executor_id');
+    }
 }

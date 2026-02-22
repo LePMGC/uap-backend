@@ -9,17 +9,20 @@ use Illuminate\Support\Facades\{Bus, Storage};
 use League\Csv\Reader;
 use League\Csv\Writer;
 use Illuminate\Bus\Batchable;
+use App\Modules\Connectors\Exports\JobInstanceExport;
+use Maatwebsite\Excel\Facades\Excel;
 
 class BatchOrchestrator
 {
     /**
      * The main entry point for executing a batch job instance.
      */
-    // app/Modules/Connectors/Services/BatchOrchestrator.php
-
+    /**
+     * The main entry point for executing a batch job instance.
+     */
     public function execute(JobInstance $instance): void
     {
-        // Log job start
+        // 1. Log job start
         UapLogger::info('BatchEngine', 'JOB_STARTED', [
             'instance_id' => $instance->id,
             'template_id' => $instance->job_template_id,
@@ -31,6 +34,7 @@ class BatchOrchestrator
         Storage::makeDirectory($dir);
 
         try {
+            // 2. Ingest Data (Move from Temp/Upload to Job folder)
             $totalRecords = $this->ingestToLocalFile($instance, $dir);
             
             UapLogger::info('BatchEngine', 'DATA_INGESTED', [
@@ -39,13 +43,42 @@ class BatchOrchestrator
                 'directory' => $dir
             ]);
 
+            // 3. Validate Contract (Ensure CSV columns match Template mapping)
             $this->validateContract($instance, $dir);
-            // ... rest of the code
+
+            // 4. Initialize Result Files (Create empty CSVs with headers for logging success/failures)
+            $csvPath = Storage::path("{$dir}/source.csv");
+            $reader = Reader::createFromPath($csvPath, 'r');
+            $reader->setHeaderOffset(0);
+            $this->initializeResultFiles($dir, $reader->getHeader());
+
+            // 5. Update status to Dispatching
+            $instance->update([
+                'status' => 'dispatching',
+                'total_records' => $totalRecords
+            ]);
+
+            // 6. Split data into chunks and send to Worker Queues
+            $this->dispatchChunks($instance, $dir);
+
+            UapLogger::info('BatchEngine', 'JOB_DISPATCHED', [
+                'instance_id' => $instance->id,
+                'chunks_count' => ceil($totalRecords / 100)
+            ]);
+
         } catch (\Exception $e) {
+            // Handle failure and log it to our custom UAP audit log
+            $instance->update([
+                'status' => 'failed',
+                'error_log' => $e->getMessage(),
+                'completed_at' => now()
+            ]);
+
             UapLogger::error('BatchEngine', 'JOB_FAILED', [
                 'instance_id' => $instance->id,
                 'error' => $e->getMessage()
             ]);
+
             throw $e;
         }
     }
@@ -144,19 +177,36 @@ class BatchOrchestrator
         // 2. Initialize the Batch with Callbacks
         $batch = Bus::batch([])
             ->then(function (\Illuminate\Bus\Batch $batch) use ($instance) {
+                // 1. Update Database Status
                 $instance->update([
                     'status' => 'completed',
                     'completed_at' => now()
                 ]);
+
+                // 2. TELECOM LOGGING: Log successful completion of the entire batch
+                \App\Modules\Connectors\Services\UapLogger::info('BatchEngine', 'JOB_COMPLETED', [
+                    'instance_id'   => $instance->id,
+                    'total_records' => $instance->total_records,
+                    'duration_sec'  => now()->diffInSeconds($instance->started_at),
+                ]);
             })
             ->catch(function (\Illuminate\Bus\Batch $batch, \Throwable $e) use ($instance) {
+                // 1. Update Database Status
                 $instance->update([
                     'status' => 'failed',
-                    'error_log' => $e->getMessage()
+                    'error_log' => $e->getMessage(),
+                    'completed_at' => now()
+                ]);
+
+                // 2. TELECOM LOGGING: Log the batch-level failure
+                \App\Modules\Connectors\Services\UapLogger::error('BatchEngine', 'BATCH_PROCESSING_FAILED', [
+                    'instance_id' => $instance->id,
+                    'error'       => $e->getMessage()
                 ]);
             })
             ->name("Batch Job: {$instance->id}")
             ->dispatch();
+
 
         // 3. Add jobs to the batch in chunks of 100
         foreach (array_chunk($allRecords, 100) as $chunk) {
@@ -187,5 +237,22 @@ class BatchOrchestrator
             if (!is_string($value)) return $value;
             return strtr($value, $placeholders);
         }, $config);
+    }
+
+
+    public function generateReport(JobInstance $instance, string $format)
+    {
+        $fileName = "Report_Job_{$instance->id}.{$format}";
+        
+        // Define the export class (we'll create this next)
+        $export = new JobInstanceExport($instance);
+
+        $writerType = match ($format) {
+            'xlsx' => \Maatwebsite\Excel\Excel::XLSX,
+            'pdf'  => \Maatwebsite\Excel\Excel::DOMPDF,
+            default => \Maatwebsite\Excel\Excel::CSV,
+        };
+
+        return Excel::download($export, $fileName, $writerType);
     }
 }

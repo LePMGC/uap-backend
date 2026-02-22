@@ -34,7 +34,9 @@ class RoleAndPermissionSeeder extends Seeder
             'run_batch_jobs',          
             'view_batch_instances',    
             'cancel_batch_instances',  
-            'download_batch_results',  
+            'download_batch_results',
+            'download_batch_report',
+              
             
             // Scheduling
             'manage_batch_schedules', 
@@ -86,6 +88,7 @@ class RoleAndPermissionSeeder extends Seeder
             'run_batch_jobs',
             'view_batch_instances',
             'download_batch_results',
+            'download_batch_report',
         ];
 
         $operator->syncPermissions($operatorPermissions);

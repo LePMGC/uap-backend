@@ -94,6 +94,7 @@ Route::middleware('auth:api')->group(function () {
             Route::get('/{instanceId}/status', [BatchJobController::class, 'getInstanceStatus']);
             Route::get('/{instanceId}/download/{type}', [BatchJobController::class, 'downloadFile']);
             Route::post('/{instanceId}/cancel', [BatchJobController::class, 'cancelInstance']);
+            Route::get('/{instanceId}/report', [BatchJobController::class, 'downloadReport']);
         });
     });
 });
