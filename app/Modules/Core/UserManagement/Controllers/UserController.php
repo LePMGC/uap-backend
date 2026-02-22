@@ -44,7 +44,6 @@ class UserController extends Controller
             'name'         => 'required|string',
             'phone_number' => 'nullable|string',
             'email'        => 'nullable|email|unique:users,email',
-            'password'     => 'required|string|min:8',
             'role'         => 'nullable|string|exists:roles,name',
         ]);
 
@@ -57,7 +56,6 @@ class UserController extends Controller
         $validated = $request->validate([
             'username'     => 'string|unique:users,username,' . $id,
             'email'        => 'nullable|email|unique:users,email,' . $id,
-            'password'     => 'nullable|string|min:8',
             'role'         => 'nullable|string|exists:roles,name',
         ]);
 
@@ -111,5 +109,16 @@ class UserController extends Controller
         } catch (ConflictHttpException $e) {
             return response()->json(['message' => $e->getMessage()], 409);
         }
+    }
+
+    public function resetPassword(int $id): JsonResponse
+    {
+        // Ensure only admins can do this (middleware already handles manage_users)
+        $tempPassword = $this->userService->resetPassword($id);
+
+        return response()->json([
+            'message' => 'Password reset successful.',
+            'temporary_password' => $tempPassword
+        ]);
     }
 }

@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
+use App\Modules\Connectors\Services\UapLogger;
 
 class UserService
 {
@@ -39,21 +40,28 @@ class UserService
         return User::with('roles.permissions')->findOrFail($id);
     }
 
-    public function createUser(array $data): User
+    public function createUser(array $data): array
     {
+        // Generate a secure random 10-character password
+        $temporaryPassword = \Illuminate\Support\Str::random(10);
+
         $user = User::create([
             'username'     => $data['username'],
             'name'         => $data['name'],
             'email'        => $data['email'] ?? null,
             'phone_number' => $data['phone_number'],
-            'password'     => Hash::make($data['password']),
+            'password'     => Hash::make($temporaryPassword),
+            'must_change_password' => true,
         ]);
 
         if (!empty($data['role'])) {
             $user->assignRole($data['role']);
         }
 
-        return $user;
+        return [
+            'user' => $user,
+            'temporary_password' => $temporaryPassword
+        ];
     }
 
     public function updateUser(int $id, array $data): User
@@ -119,5 +127,36 @@ class UserService
         ], 'CRITICAL');
 
         return $user;
+    }
+
+    public function resetPassword(int $userId): string
+    {
+        $user = User::findOrFail($userId);
+        $temporaryPassword = \Illuminate\Support\Str::random(12);
+
+        $user->update([
+            'password' => Hash::make($temporaryPassword),
+            'must_change_password' => true,
+        ]);
+
+        UapLogger::warning('Security', 'USER_PASSWORD_RESET_BY_ADMIN', [
+            'admin_id' => auth()->id(),
+            'target_user' => $user->username
+        ]);
+
+        return $temporaryPassword;
+    }
+
+    public function updatePassword(int $userId, string $newPassword): void
+    {
+        $user = User::findOrFail($userId);
+        $user->update([
+            'password' => Hash::make($newPassword),
+            'must_change_password' => false // Flag cleared
+        ]);
+
+        UapLogger::info('Security', 'USER_CHANGED_PASSWORD', [
+            'user_id' => $user->id
+        ]);
     }
 }
