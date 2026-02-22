@@ -70,6 +70,13 @@ class UserController extends Controller
         if (auth()->id() === $id) {
             return response()->json(['error' => 'You cannot delete your own account'], 403);
         }
+
+        $user = User::find($id);
+        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_DELETED', [
+            'admin_id' => auth()->id(),
+            'deleted_username' => $user->username ?? 'Unknown'
+        ], 'CRITICAL');
+
         $this->userService->deleteUser($id);
         return response()->json(['message' => 'User deleted successfully']);
     }
@@ -78,6 +85,14 @@ class UserController extends Controller
     {
         try {
             $user = $this->userService->updateUserStatus($id, true);
+
+            // LOG: Access Revocation
+            \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_BLOCKED', [
+                'admin_id' => auth()->id(),
+                'target_user_id' => $id,
+                'target_username' => $user->username
+            ], 'CRITICAL');
+
             return response()->json(['message' => 'User blocked successfully', 'user' => $user]);
         } catch (AccessDeniedHttpException $e) {
             return response()->json(['message' => $e->getMessage()], 403);

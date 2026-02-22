@@ -83,6 +83,7 @@ Route::middleware('auth:api')->group(function () {
             
             Route::prefix('{id}')->group(function () {
                 Route::post('/run', [BatchJobController::class, 'runJob']);
+                Route::delete('/', [BatchJobController::class, 'destroyTemplate']);
                 Route::post('/toggle', [BatchJobController::class, 'toggleSchedule']); 
                 Route::post('/terminate', [BatchJobController::class, 'terminateSchedule']);
             });

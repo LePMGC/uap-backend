@@ -64,6 +64,12 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
 
         $instance = ProviderInstance::create($validated);
 
+        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'PROVIDER_INSTANCE_CREATED', [
+            'user_id' => auth()->id(),
+            'provider_name' => $instance->name,
+            'category' => $instance->category_slug
+        ]);
+
         return response()->json([
             'message' => 'Provider instance created successfully',
             'data' => $instance
@@ -90,6 +96,11 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
     public function update(Request $request, $id): JsonResponse
     {
         $instance = ProviderInstance::find($id);
+
+        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'PROVIDER_CONFIG_UPDATE_ATTEMPT', [
+            'instance_id' => $id,
+            'updated_fields' => array_keys($request->all())
+        ]);
 
         if (!$instance) {
             return response()->json(['message' => 'Provider instance not found'], 404);
@@ -150,17 +161,35 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
 
             $provider = ProviderFactory::make($instance->connection_settings, $blueprint);
             
-            // Updates database status internally (is_active, last_heartbeat_at, last_error_message)
+            // 1. Execute heartbeat (this updates the DB internally)
             $provider->heartbeat($instance->id);
             $instance->refresh();
+
+            // 2. Log the RESULT of the ping
+            // We use info for success and error for failures to make the audit log filterable
+            $logMethod = $instance->is_active ? 'info' : 'error';
+            
+            \App\Modules\Connectors\Services\UapLogger::$logMethod('NetworkAudit', 'MANUAL_CONNECTIVITY_TEST', [
+                'provider_name' => $instance->name,
+                'category'      => $instance->category_slug,
+                'host'          => $instance->connection_settings['host'] ?? 'N/A',
+                'result'        => $instance->is_active ? 'SUCCESS' : 'FAILED',
+                'error_details' => $instance->last_error_message ?? 'None'
+            ]);
 
             return response()->json([
                 'success' => $instance->is_active,
                 'message' => $instance->is_active ? 'Node is reachable' : 'Node is unreachable',
-                'error' => $instance->last_error_message,
-                //'data' => $instance
+                'error'   => $instance->last_error_message,
             ]);
+
         } catch (\Exception $e) {
+            // Log the system exception (e.g., code crash vs network timeout)
+            \App\Modules\Connectors\Services\UapLogger::error('NetworkAudit', 'CONNECTIVITY_TEST_CRASH', [
+                'provider_id' => $id,
+                'exception'   => $e->getMessage()
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Check failed: ' . $e->getMessage()

@@ -81,11 +81,25 @@ class CaiProvider extends BaseProvider
         $code = isset($matches[1]) ? (int)$matches[1] : null;
 
         $isSuccessful = ($code === 0);
+        $message = $this->statusRegistry['responses'][$code] ?? "Unknown CAI Code ($code)";
+
+        // TELECOM LOGGING
+        \App\Modules\Connectors\Services\UapLogger::log(
+            'EricssonCAI', 
+            'PROVIDER_RESPONSE', 
+            $isSuccessful ? 'info' : 'error', 
+            [
+                'code' => $code,
+                'message' => $message,
+                'msisdn' => $this->parseCaiData($rawResponse)['MSISDN'] ?? 'N/A'
+            ],
+            $isSuccessful ? 'SUCCESS' : 'FAILURE'
+        );
 
         return [
             'success' => $isSuccessful,
             'code'    => $code,
-            'message' => $this->statusRegistry['responses'][$code] ?? "Unknown CAI Code ($code)",
+            'message' => $message,
             'data'    => $this->parseCaiData($rawResponse),
             'raw'     => $rawResponse
         ];

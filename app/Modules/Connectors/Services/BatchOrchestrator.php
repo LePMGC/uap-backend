@@ -15,24 +15,37 @@ class BatchOrchestrator
     /**
      * The main entry point for executing a batch job instance.
      */
+    // app/Modules/Connectors/Services/BatchOrchestrator.php
+
     public function execute(JobInstance $instance): void
     {
+        // Log job start
+        UapLogger::info('BatchEngine', 'JOB_STARTED', [
+            'instance_id' => $instance->id,
+            'template_id' => $instance->job_template_id,
+            'trigger'     => $instance->trigger_type
+        ]);
+
         $instance->update(['status' => 'loading_data', 'started_at' => now()]);
         $dir = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}";
         Storage::makeDirectory($dir);
 
         try {
-            // 1. Ingest data to local source.csv
             $totalRecords = $this->ingestToLocalFile($instance, $dir);
             
-            // 2. SCHEMA VALIDATION (The "Gatekeeper")
+            UapLogger::info('BatchEngine', 'DATA_INGESTED', [
+                'instance_id' => $instance->id,
+                'total_records' => $totalRecords,
+                'directory' => $dir
+            ]);
+
             $this->validateContract($instance, $dir);
-
-            $instance->update(['status' => 'dispatching', 'total_records' => $totalRecords]);
-            $this->dispatchChunks($instance, $dir);
-
+            // ... rest of the code
         } catch (\Exception $e) {
-            $instance->update(['status' => 'failed', 'error_log' => $e->getMessage()]);
+            UapLogger::error('BatchEngine', 'JOB_FAILED', [
+                'instance_id' => $instance->id,
+                'error' => $e->getMessage()
+            ]);
             throw $e;
         }
     }

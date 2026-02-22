@@ -13,32 +13,67 @@ class BatchSchemaService
      * and applying the specific Template configuration.
      */
 
+    /**
+     * Discovers headers by connecting to the defined DataSource 
+     * and applying the specific Template configuration.
+     */
     public function discoverHeaders(DataSource $source, array $sourceConfig): array
     {
-        // 1. Get the connector (SftpConnector, DatabaseConnector, etc.)
-        $connector = DataSourceFactory::make($source->type);
+        // Log the start of the discovery process
+        \App\Modules\Connectors\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_STARTED', [
+            'source_type' => $source->type,
+            'source_id'   => $source->id,
+            'user_provided_config' => $sourceConfig
+        ]);
 
-        // 2. Merge connection details from DB with resource details from UI
-        $connectionSettings = is_array($source->connection_settings)
-            ? $source->connection_settings
-            : json_decode($source->connection_settings ?? '{}', true);
+        try {
+            // 1. Get the connector (SftpConnector, DatabaseConnector, etc.)
+            $connector = DataSourceFactory::make($source->type);
 
-        $fullConfig = array_merge(
-            $connectionSettings ?? [],
-            $sourceConfig
-        );
+            // 2. Merge connection details from DB with resource details from UI
+            $connectionSettings = is_array($source->connection_settings)
+                ? $source->connection_settings
+                : json_decode($source->connection_settings ?? '{}', true);
 
+            $fullConfig = array_merge(
+                $connectionSettings ?? [],
+                $sourceConfig
+            );
 
-        // 3. Resolve placeholders if the user used them in the discovery path
-        // Note: We might need to resolve {Y-m-d} even during discovery!
-        $resolvedConfig = app(BatchOrchestrator::class)->resolvePlaceholders($fullConfig);
+            // 3. Resolve placeholders if the user used them in the discovery path
+            $resolvedConfig = app(BatchOrchestrator::class)->resolvePlaceholders($fullConfig);
 
-        // 4. Fetch the first row and return keys
-        foreach ($connector->fetchData($resolvedConfig) as $row) {
-            return array_keys((array) $row);
+            // 4. Fetch the first row and return keys
+            $headers = [];
+            foreach ($connector->fetchData($resolvedConfig) as $row) {
+                $headers = array_keys((array) $row);
+                break; // We only need the first row for headers
+            }
+
+            if (empty($headers)) {
+                \App\Modules\Connectors\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_EMPTY', [
+                    'resolved_config' => $resolvedConfig
+                ], 'FAILURE');
+                return [];
+            }
+
+            // Log successful discovery
+            \App\Modules\Connectors\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_COMPLETED', [
+                'headers_found_count' => count($headers),
+                'headers' => $headers
+            ]);
+
+            return $headers;
+
+        } catch (\Exception $e) {
+            // Log the failure with exception details
+            \App\Modules\Connectors\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_FAILED', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ], 'FAILURE');
+            
+            return [];
         }
-
-        return [];
     }
 
     /**

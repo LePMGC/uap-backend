@@ -83,6 +83,12 @@ class CommandLogController extends Controller implements HasMiddleware
      */
     public function store(Request $request): CommandLogResource|JsonResponse
     {
+        \App\Modules\Connectors\Services\UapLogger::info('ProviderInterface', 'UI_SINGLE_COMMAND_EXECUTION', [
+            'command' => $request->command_name,
+            'instance_id' => $request->instance_id,
+            'params_sent' => array_keys($request->params) // Log keys only for security
+        ]);
+
         $validated = $request->validate([
             'instance_id' => 'required|integer|exists:provider_instances,id',
             'command_name' => 'required|string',

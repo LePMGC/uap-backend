@@ -60,6 +60,12 @@ class DataSourceController extends Controller implements HasMiddleware
      */
     public function testConnection(Request $request)
     {
+
+        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'DATASOURCE_CONNECTION_TEST', [
+            'type' => $request->type,
+            'host' => $request->connection_settings['host'] ?? 'N/A'
+        ]);
+
         $request->validate([
             'type' => 'required|in:sftp,database,api,upload',
             'connection_settings' => 'required|array',
@@ -120,6 +126,12 @@ class DataSourceController extends Controller implements HasMiddleware
             'is_active' => 'sometimes|boolean'
         ]);
 
+        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'DATASOURCE_UPDATED', [
+            'user_id' => auth()->id(),
+            'source_id' => $id,
+            'changes' => array_keys($request->all())
+        ]);
+
         $dataSource->update($validated);
 
         return response()->json([
@@ -142,6 +154,11 @@ class DataSourceController extends Controller implements HasMiddleware
                 'message' => 'Data source not found.'
             ], 404);
         }
+
+         \App\Modules\Connectors\Services\UapLogger::error('SystemAudit', 'DATASOURCE_DELETED', [
+            'user_id' => auth()->id(),
+            'source_name' => $dataSource->name
+        ], 'CRITICAL');
 
         $dataSource->delete();
 

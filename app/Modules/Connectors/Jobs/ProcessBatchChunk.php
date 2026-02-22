@@ -11,19 +11,12 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Storage;
+use App\Modules\Connectors\Services\UapLogger;
 
 class ProcessBatchChunk implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public function __construct(
-        protected string $instanceId,
-        protected array $rows
-    ) {}
-
-    /**
-     * This job processes a chunk of rows for a given JobInstance, executing the command pipeline for each row and writing results to local CSV files.
-     */
     public function handle(BatchItemPipeline $pipeline): void
     {
         $instance = JobInstance::with('template')->find($this->instanceId);
@@ -32,9 +25,15 @@ class ProcessBatchChunk implements ShouldQueue
             return;
         }
 
+        // 1. LOG: Chunk processing started
+        UapLogger::info('BatchEngine', 'CHUNK_PROCESS_STARTED', [
+            'instance_id' => $this->instanceId,
+            'chunk_size'  => count($this->rows),
+            'batch_id'    => $this->batch()?->id
+        ]);
+
         $dir = config('connectors.batch.storage_path', 'jobs') . "/{$this->instanceId}";
         
-        // Using high-performance fopen for streaming results to local storage
         $successFile = fopen(Storage::path("{$dir}/results_success.csv"), 'a');
         $failedFile  = fopen(Storage::path("{$dir}/results_failed.csv"), 'a');
 
@@ -43,7 +42,6 @@ class ProcessBatchChunk implements ShouldQueue
 
         foreach ($this->rows as $row) {
             try {
-                // The pipeline uses $instance->template->column_mapping internally
                 $log = $pipeline->process($instance, $row);
                 
                 $resultRow = array_merge($row, [
@@ -61,6 +59,14 @@ class ProcessBatchChunk implements ShouldQueue
                 }
             } catch (\Exception $e) {
                 $localFailed++;
+
+                // 2. LOG: Individual Row Exception (Detailed for troubleshooting)
+                UapLogger::error('BatchEngine', 'ROW_PROCESSING_EXCEPTION', [
+                    'instance_id' => $this->instanceId,
+                    'error'       => $e->getMessage(),
+                    'row_data'    => $row // Operators can see which MSISDN caused the crash
+                ]);
+
                 fputcsv($failedFile, array_merge($row, [
                     'batch_status_code'   => '500',
                     'batch_is_successful' => 'NO',
@@ -72,8 +78,14 @@ class ProcessBatchChunk implements ShouldQueue
         fclose($successFile);
         fclose($failedFile);
 
-        // Atomic increment of counters for the job instance
         $instance->increment('processed_records', $localProcessed);
         $instance->increment('failed_records', $localFailed);
+
+        // 3. LOG: Chunk processing completed
+        UapLogger::info('BatchEngine', 'CHUNK_PROCESS_COMPLETED', [
+            'instance_id' => $this->instanceId,
+            'processed'   => $localProcessed,
+            'failed'      => $localFailed
+        ]);
     }
 }

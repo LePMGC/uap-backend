@@ -70,33 +70,53 @@ class UserService
             $user->syncRoles([$data['role']]);
         }
 
+        // LOG: Critical Security Event
+        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_STATUS_CHANGED', [
+            'actor_id'    => auth()->id() ?? 'SYSTEM',
+            'target_user' => $user->username,
+            'from'        => $oldStatus,
+            'to'          => $newStatus,
+        ], 'CRITICAL');
+
         return $user;
     }
 
     public function deleteUser(int $id): bool
     {
         $user = User::findOrFail($id);
+
+        // LOG: Irreversible action
+        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_PERMANENTLY_DELETED', [
+            'actor_id' => auth()->id() ?? 'SYSTEM',
+            'username' => $user->username,
+            'user_id'  => $user->id
+        ], 'CRITICAL');
+
         return $user->delete();
     }
 
     public function updateUserStatus(int $id, bool $blocked): User
     {
-        // 1. Business Logic: Prevent a user from blocking/unblocking themselves
+        // Business Logic: Prevent self-blocking (already in your service)
         if (auth()->id() === $id) {
-            $action = $blocked ? 'block' : 'unblock';
-            throw new AccessDeniedHttpException("You cannot {$action} your own account.");
+            throw new AccessDeniedHttpException("You cannot change your own status.");
         }
 
         $user = User::findOrFail($id);
-
-        // 2. Business Logic: Prevent redundant status updates
-        if ($user->is_blocked === $blocked) {
-            $status = $blocked ? 'blocked' : 'unblocked';
-            throw new ConflictHttpException("User is already {$status}.");
-        }
+        $oldStatus = $user->is_blocked ? 'BLOCKED' : 'ACTIVE';
+        $newStatus = $blocked ? 'BLOCKED' : 'ACTIVE';
 
         $user->is_blocked = $blocked;
         $user->save();
+
+        // LOG: Security compliance audit
+        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_STATUS_CHANGE', [
+            'actor' => auth()->user()->username ?? 'SYSTEM',
+            'target' => $user->username,
+            'action' => $blocked ? 'ACCOUNT_DEACTIVATED' : 'ACCOUNT_REACTIVATED',
+            'previous_state' => $oldStatus,
+            'new_state' => $newStatus
+        ], 'CRITICAL');
 
         return $user;
     }

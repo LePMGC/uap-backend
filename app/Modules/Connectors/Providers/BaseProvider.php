@@ -29,9 +29,7 @@ abstract class BaseProvider
             $payload = $this->buildPayload($commandDef, $userParams);
             $rawResponse = $this->send($payload);
 
-            \Log::info("Executed command '{$commandName}' with payload: " . json_encode($payload) . " and received response: " . json_encode($rawResponse));
-
-            return $this->parseResponse($commandDef, $rawResponse);
+            return $this->parseResponse($commandDef, $rawResponse, $userParams);
         } finally {
             // Optional: Close session after single command if necessary
             if ($this->isStateful && $this->authenticated) {
@@ -44,7 +42,7 @@ abstract class BaseProvider
     abstract protected function logout(): void;
     abstract protected function buildPayload(array $commandDef, array $params): string;
     abstract protected function send(string $payload): string;
-    abstract protected function parseResponse(array $commandDef, string $rawResponse): array;
+    abstract protected function parseResponse(array $commandDef, string $rawResponse, array $userParams): array;
 
     /**
      * The Pre-flight check sequence:

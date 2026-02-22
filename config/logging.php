@@ -127,6 +127,13 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
+        'uap' => [
+            'driver' => 'daily',
+            'path' => '/var/log/uap/application.log',
+            'level' => 'debug',
+            'days' => 14,
+        ],
+
     ],
 
 ];

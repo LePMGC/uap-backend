@@ -47,6 +47,15 @@ class RoleAndPermissionController extends Controller
     public function updatePermissions(Request $request, $id): JsonResponse
     {
         $request->validate(['permissions' => 'required|array']);
+        $role = Role::findOrFail($id);
+        
+        // LOG: Permission Escalation/Change
+        \App\Modules\Connectors\Services\UapLogger::info('Security', 'ROLE_PERMISSIONS_UPDATED', [
+            'admin_id' => auth()->id(),
+            'role_name' => $role->name,
+            'new_permissions' => $request->permissions
+        ], 'CRITICAL');
+
         $role = $this->service->updateRolePermissions($id, $request->permissions);
         return response()->json(['message' => 'Permissions updated', 'data' => $role]);
     }

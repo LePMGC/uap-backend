@@ -5,6 +5,7 @@ namespace App\Modules\Connectors\Auth;
 use App\Modules\Core\UserManagement\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use App\Modules\Connectors\Services\UapLogger;
 
 class LocalAuthConnector implements AuthConnectorInterface
 {
@@ -13,24 +14,27 @@ class LocalAuthConnector implements AuthConnectorInterface
      */
     public function authenticate(string $username, string $password): bool
     {
-        Log::info("LocalAuthConnector: Attempting local login for User=$username");
-
-        // 1. Find the user in the local database
         $user = User::where('username', $username)->first();
 
-        // 2. If user doesn't exist, fail
         if (!$user) {
-            Log::warning("LocalAuthConnector: User not found [$username]");
+            UapLogger::error('Security', 'AUTH_FAILED_LOCAL_MISSING_USER', [
+                'attempted_username' => $username
+            ], 'WARNING');
             return false;
         }
 
-        // 3. Verify the password hash
         if (Hash::check($password, $user->password)) {
-            Log::info("LocalAuthConnector: Authentication successful for [$username]");
+            UapLogger::info('Security', 'AUTH_SUCCESS_LOCAL', [
+                'user_id' => $user->id,
+                'username' => $username
+            ]);
             return true;
         }
 
-        Log::error("LocalAuthConnector: Invalid credentials for [$username]");
+        UapLogger::error('Security', 'AUTH_FAILED_LOCAL_WRONG_PW', [
+            'username' => $username
+        ], 'WARNING');
+        
         return false;
     }
 

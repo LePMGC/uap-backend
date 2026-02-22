@@ -29,6 +29,12 @@ class AuthController extends Controller
         // 1. LDAP/Local verification
         $authDriver = AuthDriverFactory::make();
         if (!$authDriver->authenticate($credentials['username'], $credentials['password'])) {
+            // LOG: Failed login attempt (Potential Brute Force)
+            \App\Modules\Connectors\Services\UapLogger::error('Security', 'LOGIN_FAILED', [
+                'username' => $credentials['username'],
+                'ip' => $request->ip()
+            ], 'WARNING');
+
             return response()->json(['error' => 'Unauthorized'], 401);
         }
 
@@ -38,12 +44,20 @@ class AuthController extends Controller
         // --- JIT PROVISIONING ---
         // If the user authenticated via LDAP but doesn't exist locally, create them.
         if (!$user) {
+
             $user = User::create([
                 'username'     => $credentials['username'],
                 'name'         => ucwords(str_replace(['.', '_'], ' ', $credentials['username'])),
                 'phone_number' => 'LDAP_PROVISIONED',
                 // Use Str::random(32) instead of str_random(32)
                 'password'     => Hash::make(Str::random(32)), 
+            ]);
+
+            // LOG: New user discovered and provisioned via LDAP
+            \App\Modules\Connectors\Services\UapLogger::info('Security', 'USER_JIT_PROVISIONED', [
+                'username' => $credentials['username'],
+                'assigned_role' => 'operator',
+                'source' => 'LDAP_SERVER'
             ]);
 
             // Assign the 'operator' role
@@ -59,6 +73,11 @@ class AuthController extends Controller
 
         // 4. Generate JWT Token
         $token = auth('api')->login($user);
+
+        \App\Modules\Connectors\Services\UapLogger::info('Security', 'LOGIN_SUCCESS', [
+            'user_id' => $user->id,
+            'username' => $user->username
+        ]);
 
         return $this->respondWithToken($token);
     }

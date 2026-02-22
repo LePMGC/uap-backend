@@ -39,6 +39,14 @@ class CommandExecutor
         try {
             // 1. Prepare Payload: Merge system defaults with user-mapped data
             $finalParams = $this->preparePayload($blueprint, $userInput, $instance);
+
+            // Log the prepared request
+            UapLogger::info('ProviderInterface', 'API_REQUEST_PREPARED', [
+                'job_instance_id' => $jobInstanceId,
+                'command' => $commandName,
+                'provider' => $instance->name,
+                'msisdn' => $finalParams['msisdn'] ?? $finalParams['subscriberNumber'] ?? $finalParams['MSISDN'] ??  'N/A'
+            ]);
             
             // 2. Validate: Ensure all required parameters from the blueprint are present
             $this->validateRequiredParams($blueprint, $finalParams);
@@ -52,6 +60,14 @@ class CommandExecutor
             );
 
             $result = $provider->execute($commandName, $finalParams);
+
+            // Log the response outcome
+            UapLogger::log('ProviderInterface', 'API_RESPONSE_RECEIVED', 
+                $result['success'] ? 'info' : 'error', [
+                'job_instance_id' => $jobInstanceId,
+                'status_code' => $result['code'],
+                'success' => $result['success']
+            ], $result['success'] ? 'SUCCESS' : 'FAILURE');
 
             // 4. Update Log with standardized response data
             $log->update([

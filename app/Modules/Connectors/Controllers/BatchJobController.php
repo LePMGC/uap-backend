@@ -44,6 +44,9 @@ class BatchJobController extends Controller
             // Results
             new Middleware(PermissionMiddleware::using('download_batch_results'), only: ['downloadFile']),
 
+            // Deletion
+            new Middleware(PermissionMiddleware::using('delete_batch_templates'), only: ['destroyTemplate']),
+
             // Schedule Management
             new Middleware(PermissionMiddleware::using('manage_batch_schedules'), only: ['toggleSchedule', 'terminateSchedule', 'updateSchedule']),
 
@@ -87,6 +90,13 @@ class BatchJobController extends Controller
 
             // CASE B: Existing DataSource (SFTP, DB, API)
             $dataSource = \App\Modules\Connectors\Models\DataSource::findOrFail($request->data_source_id);
+
+            \App\Modules\Connectors\Services\UapLogger::info('SchemaService', 'REMOTE_HEADER_DISCOVERY_REQUESTED', [
+                'user_id' => auth()->id(),
+                'source_name' => $source->name,
+                'config_keys' => array_keys($request->source_config)
+            ]);
+
             $headers = $this->schemaService->discoverHeaders($dataSource->type, $request->source_config);
 
             return response()->json([
@@ -145,6 +155,12 @@ class BatchJobController extends Controller
             $template->user_id = auth()->id();
             $template->id = (string) \Illuminate\Support\Str::uuid();
             $template->save();
+
+            \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'BATCH_TEMPLATE_CREATED', [
+                'template_id' => $template->id,
+                'template_name' => $template->name,
+                'user_id' => auth()->id()
+            ]);
 
             return response()->json([
                 'message' => 'Template created successfully',
@@ -209,11 +225,50 @@ class BatchJobController extends Controller
     }
 
     /**
+     * Remove the specified job template.
+     */
+    public function destroyTemplate(string $id)
+    {
+        $template = JobTemplate::findOrFail($id);
+
+        // 1. LOG: Capturing the destructive intent before it happens
+        \App\Modules\Connectors\Services\UapLogger::error('SystemAudit', 'BATCH_TEMPLATE_DELETION_INITIATED', [
+            'user_id'       => auth()->id(),
+            'template_id'   => $id,
+            'template_name' => $template->name,
+            'has_instances' => $template->instances()->count() > 0
+        ], 'WARNING');
+
+        // 2. Safety Check (Optional): Prevent deletion if there are active instances
+        $activeInstances = $template->instances()->whereNotIn('status', ['completed', 'failed'])->count();
+        if ($activeInstances > 0) {
+            return response()->json([
+                'error' => "Cannot delete template. There are {$activeInstances} active jobs running based on this template."
+            ], 422);
+        }
+
+        // 3. Perform Deletion
+        $template->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Template deleted successfully.'
+        ]);
+    }
+
+    /**
      * STATUS & SCHEDULING (Preserved & Refined)
      */
     public function getInstanceStatus(string $instanceId)
     {
         $instance = JobInstance::findOrFail($instanceId);
+
+        \App\Modules\Connectors\Services\UapLogger::info('BatchEngine', 'INSTANCE_STATUS_VIEWED', [
+            'instance_id' => $instanceId,
+            'current_status' => $instance->status,
+            'user_id' => auth()->id()
+        ]);
+    
         return response()->json([
             'id' => $instance->id,
             'status' => $instance->status,
@@ -277,6 +332,11 @@ class BatchJobController extends Controller
     public function cancelInstance(string $instanceId)
     {
         $instance = JobInstance::findOrFail($instanceId);
+
+        \App\Modules\Connectors\Services\UapLogger::error('BatchEngine', 'JOB_MANUALLY_CANCELLED', [
+            'instance_id' => $instanceId,
+            'user_id'     => auth()->id()
+        ], 'WARNING');
         
         // Check if the job is in a state that can be cancelled
         if (in_array($instance->status, ['pending', 'loading_data', 'dispatching', 'processing'])) {

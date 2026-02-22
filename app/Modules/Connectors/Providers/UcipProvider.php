@@ -83,7 +83,7 @@ class UcipProvider extends BaseProvider
         ->body();
     }
 
-    protected function parseResponse(array $commandDef, string $rawResponse): array
+    protected function parseResponse(array $commandDef, string $rawResponse, array $userParams): array
     {
         try {
             $xml = new SimpleXMLElement($rawResponse);
@@ -106,8 +106,27 @@ class UcipProvider extends BaseProvider
             // Inject the description into the data array so it is saved in the 'response_payload' column
             $data['response_message'] = $description;
 
+            $isSuccessful = $responseCode === 0 || $responseCode === 1 || $responseCode === 2;
+            
+            //log user parameters and response code for telecom auditing purposes
+            \Log::info("userParams: " . json_encode($commandDef['params'] ?? []));
+
+            // TELECOM LOGGING: Log the specific provider code and its meaning
+            \App\Modules\Connectors\Services\UapLogger::log(
+                'EricssonUCIP', 
+                'PROVIDER_RESPONSE', 
+                $isSuccessful ? 'info' : 'error', 
+                [
+                    'code'    => $responseCode,
+                    'message' => $description,
+                    // Now you can get it from the original request parameters!
+                    'msisdn'  => $userParams['subscriberNumber'] ?? $userParams['msisdn'] ?? 'N/A',
+                ],
+                $isSuccessful ? 'SUCCESS' : 'FAILURE'
+            );
+
             return [
-                'success' => ($responseCode === 0),
+                'success' => $isSuccessful,
                 'code'    => $responseCode,
                 'message' => $description,
                 'data'    => $data, 

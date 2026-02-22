@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Storage;
 
 class JobInstance extends Model
 {
-    use HasUuids;
+    use HasUuids, SoftDeletes;
 
     protected $fillable = [
         'job_template_id',

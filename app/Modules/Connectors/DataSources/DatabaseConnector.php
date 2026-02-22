@@ -4,6 +4,7 @@ namespace App\Modules\Connectors\DataSources;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Config;
+use App\Modules\Connectors\Services\UapLogger;
 
 class DatabaseConnector implements DataSourceInterface
 {
@@ -18,16 +19,29 @@ class DatabaseConnector implements DataSourceInterface
         }
     }
 
-    // Inside DatabaseConnector.php -> fetchData
+    /**
+     * Fetch data from the specified database table using a cursor for memory efficiency.
+     */
     public function fetchData(array $config): \Generator
     {
-        $connection = $this->getTempConnection($config);
-        
-        // Ensure 'table' comes from the Template's config passed through
         $table = $config['table'] ?? throw new \Exception("Database table not specified.");
+        
+        UapLogger::info('DataSource', 'DB_FETCH_STARTED', [
+            'database' => $config['database'],
+            'table' => $table
+        ]);
 
-        foreach ($connection->table($table)->cursor() as $row) {
-            yield (array) $row;
+        try {
+            $connection = $this->getTempConnection($config);
+            foreach ($connection->table($table)->cursor() as $row) {
+                yield (array) $row;
+            }
+        } catch (\Exception $e) {
+            UapLogger::error('DataSource', 'DB_FETCH_FAILED', [
+                'table' => $table,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
         }
     }
 

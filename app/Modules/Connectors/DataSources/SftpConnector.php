@@ -4,18 +4,28 @@ namespace App\Modules\Connectors\DataSources;
 
 use Illuminate\Support\Facades\Storage;
 use League\Csv\Reader;
+use App\Modules\Connectors\Services\UapLogger;
 
 class SftpConnector implements DataSourceInterface
 {
     public function testConnection(array $config): bool
     {
         try {
-            // Force the driver to sftp so Storage::build knows what to do
             $config['driver'] = 'sftp';
+            $status = Storage::build($config)->exists('.');
             
-            return Storage::build($config)->exists('.');
+            UapLogger::info('DataSource', 'SFTP_TEST_CONNECTION', [
+                'host' => $config['host'],
+                'user' => $config['username'],
+                'status' => $status ? 'CONNECTED' : 'FAILED'
+            ]);
+
+            return $status;
         } catch (\Exception $e) {
-            \Log::error("SFTP connection test failed: " . $e->getMessage());
+            UapLogger::error('DataSource', 'SFTP_CONNECTION_FAILED', [
+                'host' => $config['host'] ?? 'N/A',
+                'error' => $e->getMessage()
+            ]);
             return false;
         }
     }
