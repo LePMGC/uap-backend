@@ -20,6 +20,8 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\AssignRequestId::class,
         ]);
 
+        $middleware->statefulApi();
+
         $middleware->alias([
             'role' => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,

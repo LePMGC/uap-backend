@@ -16,7 +16,7 @@ use App\Modules\Connectors\Controllers\BatchJobController;
 */
 
 // Public Routes
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->name('login');
 
 // Authenticated Routes
 Route::middleware('auth:api')->group(function () {

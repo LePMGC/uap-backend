@@ -187,7 +187,7 @@ class UcipProvider extends BaseProvider
     }
 
     /**
-     * Handles XML-RPC Fault responses.
+     * Handles XML-RPC Fault responses.clear
      * These occur when the protocol itself fails (e.g., Method not found, Auth failed).
      * * @param SimpleXMLElement $faultStruct The <struct> inside the <fault> tag
      * @return array Standardized error response

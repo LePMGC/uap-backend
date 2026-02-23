@@ -114,62 +114,75 @@ class BatchJobController extends Controller
      */
     public function storeTemplate(Request $request)
     {
-        $validated = $request->validate([
-            'name'                 => 'required|string',
-            'provider_instance_id' => 'required|integer',
-            'data_source_id'       => 'required|integer',
-            'expected_columns'     => 'required|array',
+        $validator = Validator::make($request->all(), [
+            'name'                 => 'required|string|max:255',
+            'provider_instance_id' => 'required|exists:provider_instances,id',
+            'data_source_id'       => 'required|exists:data_sources,id',
+            'command_name'         => 'required|string',
+            'expected_columns'     => 'required|array|min:1',
             'column_mapping'       => 'required|array',
-            'workflow_steps'       => 'required|array',
-            'job_specific_config'  => 'nullable|array',
-            'source_config'        => 'nullable|array',
+            'job_specific_config'  => 'required|array',
+            'workflow_steps'       => 'nullable|array',
+            'source_config'       => 'required|array',
+            // Optional Scheduling
             'is_scheduled'         => 'boolean',
+            'cron_expression'      => 'required_if:is_scheduled,true|nullable',
         ]);
 
-        try {
-            // 2. Handle the file migration logic
-            if (isset($validated['source_config']['temporary_path'])) {
-                $tempPath = $validated['source_config']['temporary_path'];
-                
-                // Check if file exists in temp storage before proceeding
-                if (!Storage::exists($tempPath)) {
-                    return response()->json([
-                        'error' => 'Template creation failed: The temporary source file was not found. Please re-upload the sample file.'
-                    ], 422);
+        // Custom Validation for the Column Mapping Logic
+        $validator->after(function ($validator) use ($request) {
+            $mapping = $request->input('column_mapping', []);
+            $expectedColumns = $request->input('expected_columns', []);
+
+            foreach ($mapping as $param => $source) {
+                // 1. Check for valid prefix
+                if (!str_starts_with($source, 'static:') && !str_starts_with($source, 'column:')) {
+                    $validator->errors()->add(
+                        "column_mapping.{$param}", 
+                        "Mapping for '{$param}' must start with 'static:' or 'column:'."
+                    );
+                    continue;
                 }
 
-                $filename = basename($tempPath);
-                $permanentPath = "templates/" . $filename; 
-
-                // Move file to the permanent /private/templates folder
-                Storage::move($tempPath, $permanentPath);
-                
-                // Update the config with the permanent path for the DB record
-                $validated['source_config']['file_path'] = $permanentPath;
-                unset($validated['source_config']['temporary_path']);
+                // 2. If it's a column, verify it exists in the template definition
+                if (str_starts_with($source, 'column:')) {
+                    $columnName = substr($source, 7);
+                    if (!in_array($columnName, $expectedColumns)) {
+                        $validator->errors()->add(
+                            "column_mapping.{$param}", 
+                            "The column '{$columnName}' is not defined in the expected_columns list."
+                        );
+                    }
+                }
             }
+        });
 
-            // 3. Explicitly create the model
-            $template = new \App\Modules\Connectors\Models\JobTemplate();
-            $template->fill($validated);
-            $template->user_id = auth()->id();
-            $template->id = (string) \Illuminate\Support\Str::uuid();
-            $template->save();
-
-            \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'BATCH_TEMPLATE_CREATED', [
-                'template_id' => $template->id,
-                'template_name' => $template->name,
-                'user_id' => auth()->id()
-            ]);
-
-            return response()->json([
-                'message' => 'Template created successfully',
-                'id' => $template->id
-            ], 201);
-
-        } catch (\Exception $e) {
-            return response()->json(['error' => 'Template creation failed: ' . $e->getMessage()], 500);
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
         }
+
+        $data = $validator->validated();
+        
+        $data['job_specific_config'] = $request->input('job_specific_config', []);
+        $data['workflow_steps'] = $request->input('workflow_steps', []);
+        $data['source_config'] = $request->input('source_config', []);
+        $data['user_id'] = auth()->id();
+
+        // Handle Cron validation if scheduled
+        if ($request->is_scheduled && $request->cron_expression) {
+            if (!CronExpression::isValidExpression($request->cron_expression)) {
+                return response()->json(['error' => 'Invalid Cron Expression'], 422);
+            }
+        }
+
+        $template = JobTemplate::create($data);
+
+        \App\Modules\Connectors\Services\UapLogger::info('BatchEngine', 'TEMPLATE_CREATED', [
+            'template_id' => $template->id,
+            'name' => $template->name
+        ]);
+
+        return response()->json($template, 201);
     }
 
     

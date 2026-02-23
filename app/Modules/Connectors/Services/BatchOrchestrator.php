@@ -3,219 +3,146 @@
 namespace App\Modules\Connectors\Services;
 
 use App\Modules\Connectors\Models\JobInstance;
-use App\Modules\Connectors\DataSources\DataSourceFactory;
 use App\Modules\Connectors\Jobs\ProcessBatchChunk;
 use Illuminate\Support\Facades\{Bus, Storage};
 use League\Csv\Reader;
-use League\Csv\Writer;
-use Illuminate\Bus\Batchable;
-use App\Modules\Connectors\Exports\JobInstanceExport;
-use Maatwebsite\Excel\Facades\Excel;
+use App\Modules\Connectors\Services\UapLogger;
+use Throwable;
 
 class BatchOrchestrator
 {
-    /**
-     * The main entry point for executing a batch job instance.
-     */
-    public function execute(JobInstance $instance, ?string $traceId = null): void{
-        // Use the traceId in our logging calls
+    public function execute(JobInstance $instance, ?string $traceId = null): void
+    {
         UapLogger::info('BatchEngine', 'JOB_STARTED', [
             'instance_id' => $instance->id,
-            'template_id' => $instance->job_template_id,
-            'trigger'     => $instance->trigger_type
-        ], $traceId); 
+            'template_id' => $instance->job_template_id
+        ], $traceId);
 
-        $instance->update(['status' => 'loading_data', 'started_at' => now()]);
-        $dir = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}";
+        $instance->update(['status' => 'processing', 'started_at' => now()]);
+        $dir = "jobs/{$instance->id}";
         Storage::makeDirectory($dir);
 
-        try {
-            // 2. Ingest Data (Move from Temp/Upload to Job folder)
-            $totalRecords = $this->ingestToLocalFile($instance, $dir);
-            
-            UapLogger::info('BatchEngine', 'DATA_INGESTED', [
-                'instance_id' => $instance->id,
-                'total_records' => $totalRecords,
-            ], $traceId);
+        // 1. Ingest & Prepare Data
+        $totalRecords = $this->ingestToLocalFile($instance, $dir);
+        $this->initializeResultFiles($dir, $this->getCsvHeaders($dir));
 
-            // 3. Validate Contract (Ensure CSV columns match Template mapping)
-            $this->validateContract($instance, $dir);
+        // 2. Define the Chunks
+        $reader = Reader::createFromPath(Storage::path("{$dir}/source.csv"), 'r');
+        $reader->setHeaderOffset(0);
+        $chunks = array_chunk(iterator_to_array($reader->getRecords()), 500);
 
-            // 4. Initialize Result Files (Create empty CSVs with headers for logging success/failures)
-            $csvPath = Storage::path("{$dir}/source.csv");
-            $reader = Reader::createFromPath($csvPath, 'r');
-            $reader->setHeaderOffset(0);
-            $this->initializeResultFiles($dir, $reader->getHeader());
-
-            // 5. Update status to Dispatching
-            $instance->update([
-                'status' => 'dispatching',
-                'total_records' => $totalRecords
-            ]);
-
-            // 6. Split data into chunks and send to Worker Queues
-            $this->dispatchChunks($instance, $dir, $traceId);
-
-            UapLogger::info('BatchEngine', 'JOB_DISPATCHED', [
-                'instance_id' => $instance->id,
-                'chunks_count' => ceil($totalRecords / 100)
-            ]);
-
-        } catch (\Exception $e) {
-            // Handle failure and log it to our custom UAP audit log
-            $instance->update([
-                'status' => 'failed',
-                'error_log' => $e->getMessage(),
-                'completed_at' => now()
-            ]);
-
-            UapLogger::error('BatchEngine', 'JOB_FAILED', [
-                'instance_id' => $instance->id,
-                'error' => $e->getMessage()
-            ]);
-
-            throw $e;
+        $jobs = [];
+        foreach ($chunks as $chunk) {
+            $jobs[] = new ProcessBatchChunk($instance, $chunk, $traceId);
         }
+
+        // 3. IMPROVEMENT: The Batch Pipeline with Callbacks
+        Bus::batch($jobs)
+            ->name("Batch_Job_{$instance->id}")
+            ->then(function ($batch) use ($instance, $traceId) {
+                // All chunks finished successfully
+                $service = app(BatchOrchestrator::class);
+                $service->finalize($instance, 'completed', $traceId);
+            })
+            ->catch(function ($batch, Throwable $e) use ($instance, $traceId) {
+                // First batch failure detected
+                UapLogger::error('BatchEngine', 'BATCH_CRITICAL_FAILURE', [
+                    'instance_id' => $instance->id,
+                    'error' => $e->getMessage()
+                ], $traceId);
+                
+                $instance->update(['status' => 'failed', 'error_message' => $e->getMessage()]);
+            })
+            ->finally(function ($batch) use ($instance, $traceId) {
+                // Cleanup or final logging
+            })
+            ->dispatch();
     }
 
     /**
-     * Validates that the ingested data contains all columns required by the Template's mapping configuration.
-     */
-    protected function validateContract(JobInstance $instance, string $dir): void
-    {
-        $template = $instance->template;
-        $path = Storage::path("{$dir}/source.csv");
-        $csv = Reader::createFromPath($path, 'r');
-        $csv->setHeaderOffset(0);
-        
-        $actualHeaders = $csv->getHeader();
-        $requiredHeaders = array_keys($template->column_mapping);
-
-        $missing = array_diff($requiredHeaders, $actualHeaders);
-
-        if (!empty($missing)) {
-            throw new \Exception("Data inconsistency: The source is missing columns required by the template mapping: " . implode(', ', $missing));
-        }
-    }
-
-    /**
-     * Ingests data from the external source to a local CSV file, returning the total record count.
+     * Moves the source file from temporary storage to the job's permanent directory.
+     * returns the total number of records in the file.
      */
     protected function ingestToLocalFile(JobInstance $instance, string $dir): int
     {
         $template = $instance->template;
-        $config = $template->source_config;
+        $sourceConfig = $template->source_config;
+        
+        // 1. Get the path from the template config
+        $tempPath = $sourceConfig['temporary_path'] ?? null;
 
-        // 1. Identify where the source file is
-        if (!isset($config['file_path'])) {
-            throw new \Exception("Template configuration error: 'file_path' is missing in source_config.");
+        if (!$tempPath || !Storage::exists($tempPath)) {
+            throw new \Exception("Source file not found at: " . ($tempPath ?? 'NULL'));
         }
 
-        $sourcePath = $config['file_path']; // e.g., 'templates/discovery_1_1771639662.csv'
-        $destinationPath = "{$dir}/source.csv"; // e.g., 'jobs/uuid/source.csv'
+        // 2. Move to local job directory
+        $destination = "{$dir}/source.csv";
+        Storage::copy($tempPath, $destination);
 
-        // 2. Copy the file from templates to the working job directory
-        if (Storage::exists($sourcePath)) {
-            Storage::copy($sourcePath, $destinationPath);
-        } else {
-            throw new \Exception("Source file not found at: {$sourcePath}");
+        // 3. Count records (subtracting 1 if there is a header)
+        $reader = Reader::createFromPath(Storage::path($destination), 'r');
+        $hasHeader = $sourceConfig['has_header'] ?? true;
+        
+        if ($hasHeader) {
+            $reader->setHeaderOffset(0);
         }
 
-        // 3. Count records for the progress bar
-        $fullPath = Storage::path($destinationPath);
-        $csv = Reader::createFromPath($fullPath, 'r');
-        $csv->setHeaderOffset(0);
-
-        return count($csv);
+        $count = count(iterator_to_array($reader->getRecords()));
+        
+        $instance->update(['total_records' => $count]);
+        
+        return $count;
     }
 
     /**
-     * Ensures the ingested file matches the Template's expected mapping
+     * Reads the headers from the job's source CSV file.
      */
-    protected function validateInstanceSchema(JobInstance $instance, string $dir): void
+    protected function getCsvHeaders(string $dir): array
     {
-        $template = $instance->template;
-        $csvPath = Storage::path("{$dir}/source.csv");
+        $path = Storage::path("{$dir}/source.csv");
         
-        $reader = Reader::createFromPath($csvPath, 'r');
-        $reader->setHeaderOffset(0);
-        
-        $actualHeaders = $reader->getHeader();
-        $requiredHeaders = array_keys($template->column_mapping ?? []);
-        
-        $missing = array_diff($requiredHeaders, $actualHeaders);
-
-        if (!empty($missing)) {
-            throw new \Exception("The data source is missing columns required by the template mapping: " . implode(', ', $missing));
+        if (!file_exists($path)) {
+            throw new \Exception("Cannot read headers: Source file missing at {$path}");
         }
+
+        $reader = Reader::createFromPath($path, 'r');
+        $reader->setHeaderOffset(0); // Assumes the first row is the header
+        
+        return $reader->getHeader();
     }
 
     /**
-     * Dispatches processing jobs for each chunk of the source data.
+     * Finalize the job: Update status and create the downloadable result package.
      */
-    protected function dispatchChunks(JobInstance $instance, string $dir, ?string $traceId = null): void
+    public function finalize(JobInstance $instance, string $status, ?string $traceId = null): void
     {
-        $csvPath = Storage::path("{$dir}/source.csv");
-        $reader = Reader::createFromPath($csvPath, 'r');
-        $reader->setHeaderOffset(0);
-
-        $jobs = [];
-        $chunkSize = 100;
-        $chunk = [];
-
-        foreach ($reader->getRecords() as $record) {
-            $chunk[] = $record;
-            if (count($chunk) === $chunkSize) {
-                $jobs[] = new ProcessBatchChunk($instance, $chunk, $traceId);
-                $chunk = [];
-            }
-        }
-        if (!empty($chunk)) {
-            $jobs[] = new ProcessBatchChunk($instance, $chunk, $traceId);
-        }
-
-        // Use Laravel Bus Batching to handle the lifecycle
-        $batch = Bus::batch($jobs)
-            ->then(function ($batch) use ($instance, $traceId) {
-                // ALL CHUNKS FINISHED SUCCESSFULLY
-                $instance->update([
-                    'status' => 'completed',
-                    'completed_at' => now()
-                ]);
-
-                UapLogger::info('BatchEngine', 'JOB_COMPLETED_SUCCESSFULLY', [
-                    'instance_id' => $instance->id
-                ], $traceId);
-            })
-            ->catch(function ($batch, $e) use ($instance, $traceId) {
-                // THE BATCH FAILED
-                $instance->update(['status' => 'failed']);
-                
-                UapLogger::error('BatchEngine', 'BATCH_EXECUTION_ERROR', [
-                    'instance_id' => $instance->id,
-                    'error' => $e->getMessage()
-                ], $traceId);
-            })
-            ->finally(function ($batch) use ($instance) {
-                // Run any cleanup here if needed
-            })
-            ->name("Batch-Job-{$instance->id}")
-            ->dispatch();
-
-        // Link the Batch ID to your instance for tracking (optional but recommended)
+        $instance->refresh(); // Get latest counts from DB
+        
+        // Update final state
         $instance->update([
-            'status' => 'processing', // Move from dispatching to processing
-            'batch_id' => $batch->id
+            'status' => $status,
+            'completed_at' => now(),
         ]);
+
+        UapLogger::info('BatchEngine', 'JOB_FINALIZED', [
+            'instance_id' => $instance->id,
+            'status'      => $status,
+            'processed'   => $instance->processed_records,
+            'failed'      => $instance->failed_records
+        ], $traceId);
+
+        // Notify user via Webhook or Database Notification
+        // $instance->user->notify(new BatchCompletedNotification($instance));
     }
 
     protected function initializeResultFiles(string $dir, array $headers): void
     {
         $resHeaders = array_merge($headers, ['batch_status_code', 'batch_is_successful', 'batch_error_message']);
-        $headerStr = implode(',', $resHeaders) . PHP_EOL;
+        $headerLine = implode(',', $resHeaders) . PHP_EOL;
         
-        Storage::put("{$dir}/results_success.csv", $headerStr);
-        Storage::put("{$dir}/results_failed.csv", $headerStr);
+        // We use put() for the first time to create the file with headers
+        Storage::put("{$dir}/results_success.csv", $headerLine);
+        Storage::put("{$dir}/results_failed.csv", $headerLine);
     }
 
     public function resolvePlaceholders(array $config): array

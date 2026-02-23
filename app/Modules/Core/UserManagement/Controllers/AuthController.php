@@ -119,15 +119,17 @@ class AuthController extends Controller
 
         return response()->json([
             'access_token'  => $token,
-            'refresh_token' => auth('api')->refresh(), // New refresh token for the next cycle
+            // Instead of calling refresh() here (which invalidates the $token),
+            // we return the same token or a dedicated long-lived one.
+            // For testing, let's just return the token itself as the refresh marker
+            // or a manual refresh if your JWT provider supports dedicated refresh TTLs.
+            'refresh_token' => $token, 
             'token_type'    => 'bearer',
             'expires_in'    => auth('api')->factory()->getTTL() * 60,
             
-            // Security & Mode Flags
             'must_change_password' => ($isLocalMode && $user->must_change_password),
             'auth_mode'            => config('auth.uap_mode'),
             
-            // User Metadata
             'user' => [
                 'username' => $user->username,
                 'name'     => $user->name,
@@ -142,11 +144,8 @@ class AuthController extends Controller
      */
     public function refresh()
     {
-        // 1. Generate the new access token
-        $token = auth('api')->refresh();
-
-        // 2. Return consistent response with security flags
-        return $this->respondWithToken($token);
+        // This is where the actual invalidation/rotation should happen
+        return $this->respondWithToken(auth('api')->refresh());
     }
 
     /**
