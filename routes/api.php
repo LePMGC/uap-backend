@@ -65,6 +65,7 @@ Route::middleware('auth:api')->group(function () {
             Route::prefix('instances')->group(function () {
                 Route::get('/', [ProviderInstanceController::class, 'index']);
                 Route::post('/', [ProviderInstanceController::class, 'store']);
+                Route::get('/categories', [ProviderInstanceController::class, 'getCategories']);
                 Route::get('/{id}', [ProviderInstanceController::class, 'show']);
                 Route::put('/{id}', [ProviderInstanceController::class, 'update']);
                 Route::delete('/{id}', [ProviderInstanceController::class, 'destroy']);
@@ -77,6 +78,7 @@ Route::middleware('auth:api')->group(function () {
         Route::prefix('data-sources')->group(function () {
             Route::get('/', [DataSourceController::class, 'index']);
             Route::post('/', [DataSourceController::class, 'store']);
+            Route::get('/types', [DataSourceController::class, 'getTypes']);
             Route::get('/{dataSource}', [DataSourceController::class, 'show']);
             Route::put('/{dataSource}', [DataSourceController::class, 'update']);
             Route::post('/test', [DataSourceController::class, 'testConnection']);

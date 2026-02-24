@@ -22,6 +22,7 @@ class DataSourceController extends Controller implements HasMiddleware
             new Middleware('permission:edit_datasources', only: ['update']),
             new Middleware('permission:delete_datasources', only: ['destroy']),
             new Middleware('permission:test_datasources', only: ['testConnection']),
+            new Middleware('permission:view_datasources', only: ['getTypes']),
         ];
     }
 
@@ -165,6 +166,41 @@ class DataSourceController extends Controller implements HasMiddleware
         return response()->json([
             'success' => true,
             'message' => 'Data source deleted successfully.'
+        ]);
+    }
+
+    /**
+     * Get list of supported data source types.
+     */
+    public function getTypes()
+    {
+        // Define the supported types
+        // In a more advanced setup, these could be pulled from a config file
+        $types = [
+            [
+                'id' => 'upload',
+                'name' => 'File Upload (CSV/Excel)',
+                'description' => 'Direct manual file upload from the browser.'
+            ],
+            [
+                'id' => 'database',
+                'name' => 'External Database',
+                'description' => 'Connection to MySQL, PostgreSQL, or Oracle.'
+            ],
+            [
+                'id' => 'sftp',
+                'name' => 'SFTP / FTP',
+                'description' => 'Remote file transfer protocol for batch processing.'
+            ],
+            [
+                'id' => 'api',
+                'name' => 'Remote API',
+                'description' => 'Pulling data from a third-party REST/SOAP endpoint.'
+            ],
+        ];
+
+        return response()->json([
+            'data' => $types
         ]);
     }
 }

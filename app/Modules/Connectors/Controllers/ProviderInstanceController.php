@@ -25,6 +25,7 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
             new Middleware('permission:edit_providers', only: ['update']),
             new Middleware('permission:delete_providers', only: ['destroy']),
             new Middleware('permission:test_connectivity', only: ['manualPing']),
+            new Middleware('permission:view_providers', only: ['getCommands', 'getCategories']),
         ];
     }
 
@@ -237,5 +238,35 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
             ->toArray();
 
         return response()->json($grouped);
+    }
+
+    /**
+     * Get list of provider categories with counts for dropdowns and filters.
+     */
+    public function getCategories()
+    {
+        // 1. Load the blueprints config
+        $blueprints = config('blueprints');
+
+        // If the config isn't registered in the standard Laravel config directory, 
+        // you may need to load it manually:
+        if (!$blueprints) {
+            $blueprints = require app_path('Modules/Connectors/Config/blueprints.php');
+        }
+
+        $categories = [];
+
+        foreach ($blueprints as $slug => $data) {
+            $categories[] = [
+                'slug'            => $slug,
+                'name'            => $data['name'] ?? ucwords(str_replace('-', ' ', $slug)),
+                'response_format' => $data['response_format'] ?? 'json',
+                'command_count'   => count($data['commands'] ?? []),
+            ];
+        }
+
+        return response()->json([
+            'data' => $categories
+        ]);
     }
 }
