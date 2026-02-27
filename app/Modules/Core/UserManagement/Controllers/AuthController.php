@@ -41,7 +41,7 @@ class AuthController extends Controller
                 'ip' => $request->ip()
             ], 'WARNING');
 
-            return response()->json(['error' => 'Unauthorized'], 401);
+            return response()->json(['message' => 'Invalid credentials'], 401);
         }
 
         // 2. Find the user locally

@@ -34,4 +34,10 @@ class ProviderInstance extends Model
     {
         return $query->where('is_active', true);
     }
+
+    //get command logs for this provider instance
+    public function logs()
+    {
+        return $this->hasMany(CommandLog::class, 'provider_instance_id');
+    }
 }

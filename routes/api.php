@@ -8,6 +8,7 @@ use App\Modules\Connectors\Controllers\DataSourceController;
 use App\Modules\Connectors\Controllers\ProviderInstanceController;
 use App\Modules\Connectors\Controllers\CommandLogController;
 use App\Modules\Connectors\Controllers\BatchJobController;
+use App\Modules\Core\Dashboard\Controllers\DashboardController;
 
 /*
 |--------------------------------------------------------------------------
@@ -115,6 +116,13 @@ Route::middleware('auth:api')->group(function () {
                 Route::post('/{instanceId}/cancel', [BatchJobController::class, 'cancelInstance']);
                 Route::get('/{instanceId}/report', [BatchJobController::class, 'downloadReport']);
             });
+        });
+
+        Route::group(['prefix' => 'dashboard'], function () {
+            Route::get('/stats', [DashboardController::class, 'getStats']);
+            Route::get('/platform-health', [DashboardController::class, 'getPlatformHealth']);
+            Route::get('/providers-health', [DashboardController::class, 'getProvidersHealth']);
+            Route::get('/recent-activities', [DashboardController::class, 'getRecentActivities']);
         });
     });
 });

@@ -201,11 +201,12 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
     /**
      * Returns available commands for a specific provider instance.
      */
-    public function getCommands(int $instanceId)
+    public function getCommands(Request $request, int $instanceId)
     {
         $instance = ProviderInstance::findOrFail($instanceId);
         $user = auth()->user();
         $executor = new \App\Modules\Connectors\Services\CommandExecutor();
+        $shouldGroup = $request->query('grouped', 'true') === 'true';
         
         // 1. Get all command names in the folder
         $allCommandNames = $executor->getAvailableCommandNames($instance->category_slug);
@@ -228,6 +229,13 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
                     'action' => $blueprint['action'] ?? 'run'
                 ]);
             }
+        }
+
+        if (!$shouldGroup) {
+            // Return a flat, alphabetically sorted list
+            return response()->json([
+                'data' => $allowed->sortBy('name')->values()->all()
+            ]);
         }
 
         // 3. Group and Sort

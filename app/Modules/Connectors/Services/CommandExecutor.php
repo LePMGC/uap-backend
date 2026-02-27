@@ -154,4 +154,25 @@ class CommandExecutor
 
         return include $path;
     }
+
+    /**
+     * Get all command names available for a specific category slug.
+     * Scans the Modules/Connectors/Blueprints/{slug}/ directory.
+     */
+    public function getAvailableCommandNames(string $slug): array
+    {
+        $directory = app_path("Modules/Connectors/Blueprints/{$slug}");
+
+        // Safety check if directory exists
+        if (!is_dir($directory)) {
+            return [];
+        }
+
+        // Find all .php files in the directory
+        $files = glob($directory . '/*.php');
+
+        return array_map(function ($path) {
+            return basename($path, '.php');
+        }, $files);
+    }
 }

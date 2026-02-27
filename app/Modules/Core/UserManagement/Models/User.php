@@ -58,7 +58,7 @@ class User extends Authenticatable implements JWTSubject
             'email'        => $this->email,
             'phone_number' => $this->phone_number,
             // Dynamically get roles and permissions from Spatie
-            'roles'        => $this->getRoleNames()[0] ?? null, // Assuming single role for simplicity
+            'role'        => $this->getRoleNames()[0] ?? null, // Assuming single role for simplicity
             'permissions'  => $this->getAllPermissions()->pluck('name'),
         ];
     }
