@@ -15,21 +15,54 @@ class UserService
     /**
      * Get all users with optional filtering and pagination.
      */
+
     public function getAllUsers(array $filters = []): LengthAwarePaginator
     {
         $query = User::query()->with('roles');
 
-        if (!empty($filters['name'])) {
-            $query->where('name', 'like', '%' . $filters['name'] . '%');
-        }
-        if (!empty($filters['username'])) {
-            $query->where('username', 'like', '%' . $filters['username'] . '%');
-        }
-        if (!empty($filters['email'])) {
-            $query->where('email', 'like', '%' . $filters['email'] . '%');
+        // 1. Existing Filters
+        if (!empty($filters['search'])) {
+            $query->where(function ($q) use ($filters) {
+                $q->where('name', 'like', '%' . $filters['search'] . '%')
+                ->orWhere('email', 'like', '%' . $filters['search'] . '%');
+            });
         }
 
-        return $query->paginate($filters['per_page'] ?? 15);
+        // 2. Filter by Role ID
+        if (!empty($filters['role'])) {
+            $query->whereHas('roles', function ($q) use ($filters) {
+                $q->where('id', $filters['role']);
+            });
+        }
+
+        // 3. Filter by Status (active/blocked)
+        if (!empty($filters['status'])) {
+            $isBlocked = ($filters['status'] === 'blocked');
+            $query->where('is_blocked', $isBlocked);
+        }
+
+        // --- ADD SORTING HERE ---
+        $query->orderBy('created_at', 'desc');
+
+        $paginator = $query->paginate($filters['per_page'] ?? 15);
+
+        $paginator->getCollection()->transform(function ($user) {
+            $user->role = $user->getRoleNames()->first();
+            $user->role_id = $user->roles->first()->id ?? null;
+            return $user;
+        });
+
+        return $paginator;
+    }
+
+    public function getUserById(int $id): User
+    {
+        $user = User::with('roles')->findOrFail($id);
+        
+        // Append the role name directly to the object
+        $user->role = $user->getRoleNames()->first();
+        
+        return $user;
     }
 
     /**
@@ -53,8 +86,8 @@ class UserService
             'is_blocked'   => false,
         ]);
 
-        if (!empty($data['role'])) {
-            $user->assignRole($data['role']);
+        if (!empty($data['role_id'])) {
+            $user->assignRole($data['role_id']);
         }
 
         UapLogger::info('Security', 'USER_CREATED', [
@@ -116,24 +149,46 @@ class UserService
     }
 
     /**
-     * Administrative status management (Block/Unblock).
+     * Update user details and sync roles.
      */
-    public function updateUserStatus(int $id, bool $blocked): User
+    public function updateUser(int $id, array $data): User
+    {
+        $user = User::findOrFail($id);
+
+        // Update basic info
+        $user->update(collect($data)->except('role_id')->toArray());
+
+        // Handle Role Update if role_id is provided
+        if (isset($data['role_id'])) {
+            $role = \Spatie\Permission\Models\Role::findOrFail($data['role_id']);
+            $user->syncRoles([$role->name]);
+        }
+
+        UapLogger::info('User Management', 'USER_UPDATED', [
+            'actor' => auth()->user()->username ?? 'SYSTEM',
+            'target' => $user->username,
+            'changes' => array_keys($data)
+        ]);
+
+        return $user->load('roles');
+    }
+
+    /**
+     * Delete a user with safety checks.
+     */
+    public function deleteUser(int $id): void
     {
         if (auth()->id() === $id) {
-            throw new AccessDeniedHttpException("You cannot change your own status.");
+            throw new AccessDeniedHttpException("You cannot delete your own account.");
         }
 
         $user = User::findOrFail($id);
-        $user->is_blocked = $blocked;
-        $user->save();
 
-        UapLogger::error('Security', 'USER_STATUS_CHANGE', [
-            'actor' => auth()->user()->username ?? 'SYSTEM',
-            'target' => $user->username,
-            'action' => $blocked ? 'ACCOUNT_DEACTIVATED' : 'ACCOUNT_REACTIVATED'
+        $user->delete();
+
+        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_DELETED', [
+            'admin_id' => auth()->id(),
+            'deleted_username' => $user->username ?? 'Unknown'
         ], 'CRITICAL');
-
-        return $user;
     }
 }

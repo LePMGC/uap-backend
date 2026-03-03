@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
+use App\Modules\Core\UserManagement\Models\User;
 
 class UserController extends Controller
 {
@@ -28,7 +29,17 @@ class UserController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $filters = $request->only(['name', 'username', 'email', 'phone_number', 'per_page']);
+        $filters = $request->only([
+            'name', 
+            'username', 
+            'email', 
+            'phone_number', 
+            'per_page',
+            'role',
+            'status',
+            'search'
+        ]);
+
         return response()->json($this->userService->getAllUsers($filters));
     }
 
@@ -44,7 +55,7 @@ class UserController extends Controller
             'name'         => 'required|string',
             'phone_number' => 'nullable|string',
             'email'        => 'nullable|email|unique:users,email',
-            'role'         => 'nullable|string|exists:roles,name',
+            'role_id'         => 'nullable|integer|exists:roles,id',
         ]);
 
         $user = $this->userService->createUser($validated);
@@ -54,9 +65,11 @@ class UserController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $validated = $request->validate([
-            'username'     => 'string|unique:users,username,' . $id,
-            'email'        => 'nullable|email|unique:users,email,' . $id,
-            'role'         => 'nullable|string|exists:roles,name',
+            'name'         => 'sometimes|string',
+            'username'     => 'sometimes|string|unique:users,username,' . $id,
+            'email'        => 'sometimes|nullable|email|unique:users,email,' . $id,
+            'phone_number' => 'sometimes|nullable|string',
+            'role_id'      => 'sometimes|nullable|exists:roles,id', // Changed to match payload
         ]);
 
         $user = $this->userService->updateUser($id, $validated);
@@ -65,16 +78,6 @@ class UserController extends Controller
 
     public function destroy(int $id): JsonResponse
     {
-        if (auth()->id() === $id) {
-            return response()->json(['error' => 'You cannot delete your own account'], 403);
-        }
-
-        $user = User::find($id);
-        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_DELETED', [
-            'admin_id' => auth()->id(),
-            'deleted_username' => $user->username ?? 'Unknown'
-        ], 'CRITICAL');
-
         $this->userService->deleteUser($id);
         return response()->json(['message' => 'User deleted successfully']);
     }
