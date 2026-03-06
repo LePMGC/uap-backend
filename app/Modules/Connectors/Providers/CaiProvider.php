@@ -138,7 +138,8 @@ class CaiProvider extends BaseProvider
     public function checkHealth(): bool
     {
         try {
-            $this->login(); // If this fails, it throws an Exception
+            // Attempt a full login sequence to verify credentials and protocol
+            $this->login();
             $this->logout();
             return true;
         } catch (\Exception $e) {

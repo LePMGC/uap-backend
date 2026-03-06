@@ -191,4 +191,19 @@ class UserService
             'deleted_username' => $user->username ?? 'Unknown'
         ], 'CRITICAL');
     }
+
+    /**
+     * Update user status (is_blocked)
+     */
+    public function updateUserStatus(int $id, $status){
+        if (auth()->id() === $id) {
+            throw new AccessDeniedHttpException("You cannot update status of your own account.");
+        }
+
+        $user = User::findOrFail($id);
+        $user->is_blocked = $status;
+        $user->save();
+
+        return $user;
+    }
 }

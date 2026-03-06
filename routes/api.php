@@ -46,6 +46,8 @@ Route::middleware('auth:api')->group(function () {
             // Roles & Permissions
             Route::get('/roles', [RoleAndPermissionController::class, 'index']);
             Route::post('/roles', [RoleAndPermissionController::class, 'store']);
+            Route::get('/roles/{id}', [RoleAndPermissionController::class, 'show']);
+            Route::put('/roles/{id}', [RoleAndPermissionController::class, 'update']);
             Route::delete('/roles/{id}', [RoleAndPermissionController::class, 'destroy']);
             Route::get('/permissions', [RoleAndPermissionController::class, 'listPermissions']);
             Route::put('/roles/{id}/permissions', [RoleAndPermissionController::class, 'updatePermissions']);
@@ -71,6 +73,7 @@ Route::middleware('auth:api')->group(function () {
                 Route::put('/{id}', [ProviderInstanceController::class, 'update']);
                 Route::delete('/{id}', [ProviderInstanceController::class, 'destroy']);
                 Route::post('/{id}/ping', [ProviderInstanceController::class, 'manualPing']);
+                Route::post('/test-connection', [ProviderInstanceController::class, 'testConnection']);
                 Route::get('/{id}/commands', [ProviderInstanceController::class, 'getCommands']);
             });
         });

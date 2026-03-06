@@ -7,6 +7,7 @@ use App\Modules\Core\UserManagement\Services\RoleAndPermissionService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Routing\Controllers\Middleware;
+use Spatie\Permission\Models\Role;
 
 class RoleAndPermissionController extends Controller
 {
@@ -27,9 +28,9 @@ class RoleAndPermissionController extends Controller
         ];
     }
 
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        return response()->json($this->service->getAllRoles());
+        return response()->json($this->service->getAllRoles($request->all()));
     }
 
     public function listPermissions(): JsonResponse
@@ -87,5 +88,24 @@ class RoleAndPermissionController extends Controller
         } catch (\Exception $e) {
             return response()->json(['error' => $e->getMessage()], 500);
         }
+    }
+
+    public function show($id): JsonResponse
+    {
+        $role = Role::with('permissions')->findOrFail($id);
+        return response()->json($role);
+    }
+
+    // Update role name and permissions
+    public function update(Request $request, $id): JsonResponse
+    {
+        $request->validate([
+            'name' => 'sometimes|required|unique:roles,name,' . $id,
+            'permissions' => 'sometimes|required|array'
+        ]);
+
+        $role = $this->service->updateRole($id, $request->name ?? null, $request->permissions ?? []);
+
+        return response()->json(['message' => 'Role updated successfully', 'data' => $role]);
     }
 }

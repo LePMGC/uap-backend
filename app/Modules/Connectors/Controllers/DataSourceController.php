@@ -27,11 +27,35 @@ class DataSourceController extends Controller implements HasMiddleware
     }
 
     /**
-     * Display a listing of the data sources.
+     * Display a listing of the data sources with filtering and pagination.
      */
-    public function index()
+    public function index(Request $request)
     {
-        $sources = DataSource::with('creator:id,username')->get();
+        $query = DataSource::query()->with('creator:id,username');
+
+        // 1. Filter by Name (Case-insensitive search)
+        if ($request->filled('search')) {
+            $query->where('name', 'ilike', '%' . $request->query('search') . '%');
+        }
+
+        // 2. Filter by Type (Exact match)
+        if ($request->filled('type')) {
+            $query->where('type', $request->query('type'));
+        }
+
+        // 3. Filter by Status (is_active)
+        if ($request->has('is_active') && in_array(strtolower($request->query('is_active')), ['true', 'false', '1', '0'], true)) {
+            $isActive = filter_var($request->query('is_active'), FILTER_VALIDATE_BOOLEAN);
+            $query->where('is_active', $isActive);
+        }
+
+        // 4. Default Sorting (Newest first)
+        $query->orderBy('created_at', 'desc');
+
+        // 5. Pagination
+        $perPage = (int) $request->query('per_page', 15);
+        $sources = $query->paginate($perPage);
+
         return response()->json($sources);
     }
 

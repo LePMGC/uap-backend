@@ -36,8 +36,8 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
     {
         $query = ProviderInstance::query();
 
-        if ($request->has('category_slug')) {
-            $query->where('category_slug', $request->category_slug);
+        if ($request->has('category') && !empty($request->category)) {
+            $query->where('category_slug', $request->category);
         }
 
         if ($request->has('is_active')) {
@@ -276,5 +276,66 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
         return response()->json([
             'data' => $categories
         ]);
+    }
+
+
+    /**
+     * Test connectivity using raw settings (Pre-save check).
+     */
+    public function testConnection(Request $request): JsonResponse
+    {
+        $request->validate([
+            'category_slug'       => 'required|string',
+            'connection_settings' => 'required|array',
+        ]);
+
+        $category = $request->category_slug;
+        $settings = $request->connection_settings;
+        $rules = [
+            'host'     => 'required|string',
+            'port'     => 'required|integer',
+            'username' => 'required|string',
+            'password' => 'required|string',
+        ];
+
+        if ($category === 'snmp-provider') {
+            $rules['version'] = 'required|in:v2c,v3';
+            $rules['community'] = 'required_if:version,v2c';
+        } elseif ($category === 'web-service') {
+            $rules['protocol'] = 'required|in:http,https';
+        }
+
+        $validator = \Validator::make($settings, $rules);
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        try {
+            $blueprint = config("providers.{$category}");
+            if (!$blueprint) {
+                return response()->json(['message' => 'Blueprint not found'], 400);
+            }
+
+            $provider = ProviderFactory::make($settings, $blueprint);
+            $isSuccessful = $provider->checkConnectivity();
+
+            
+            \App\Modules\Connectors\Services\UapLogger::info('NetworkAudit', 'PRE_SAVE_CONNECTIVITY_TEST', [
+                'category' => $category,
+                'host'     => $settings['host'],
+                'result'   => $isReachable ? 'SUCCESS' : 'FAILED'
+            ]);
+
+            return response()->json([
+                'success' => $isReachable,
+                'message' => $isReachable ? 'Connection established successfully' : 'Unable to reach host',
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Connection test failed: ' . $e->getMessage()
+            ], 200);
+        }
     }
 }

@@ -114,5 +114,47 @@ abstract class BaseProvider
         return false;
     }
 
+    /**
+     * Perform a stateless connectivity check without database side-effects.
+     * Useful for testing settings before saving a provider instance.
+     */
+    public function checkConnectivity(): bool
+    {
+        try {
+            $host = $this->config['host'] ?? null;
+            $port = $this->config['port'] ?? null;
+
+            if (!$host) {
+                throw new \Exception("Host is required for connectivity check.");
+            }
+
+            // Level 1: Network Check (ICMP Ping)
+            if (!$this->ping($host)) {
+                throw new \Exception("Network Level: Host Unreachable (Ping Failed)");
+            }
+
+            // Level 2: Transport Check (TCP Port)
+            if ($port && !$this->isPortOpen($host, $port)) {
+                throw new \Exception("Transport Level: Port $port Refused");
+            }
+
+            // Level 3: Protocol/Application Check
+            // This calls the specific checkHealth() implemented in child classes
+            if (!$this->checkHealth()) {
+                throw new \Exception("Application Level: Protocol Handshake Failed");
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            // Log the failure details via our custom logger for auditing
+            \App\Modules\Connectors\Services\UapLogger::error('NetworkAudit', 'PRE_SAVE_CHECK_FAILED', [
+                'host'  => $this->config['host'] ?? 'N/A',
+                'error' => $e->getMessage()
+            ]);
+            
+            return false;
+        }
+    }
+
     abstract public function checkHealth(): bool;
 }

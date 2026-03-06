@@ -17,7 +17,7 @@ class UapLogger
         string $level = 'info', 
         array $context = [], 
         ?string $status = 'SUCCESS',
-        ?string $manualTraceId = null // Add this parameter
+        ?string $manualTraceId = null
     ) {
         // Priority: Manual ID (from Worker) > Request Header (from API) > PID (Fallback)
         $traceId = $manualTraceId ?? request()->header('X-Request-ID') ?? 'CLI-' . getmypid();
