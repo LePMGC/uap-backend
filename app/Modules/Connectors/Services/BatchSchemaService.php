@@ -20,7 +20,7 @@ class BatchSchemaService
     public function discoverHeaders(DataSource $source, array $sourceConfig): array
     {
         // Log the start of the discovery process
-        \App\Modules\Connectors\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_STARTED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_STARTED', [
             'source_type' => $source->type,
             'source_id'   => $source->id,
             'user_provided_config' => $sourceConfig
@@ -51,14 +51,14 @@ class BatchSchemaService
             }
 
             if (empty($headers)) {
-                \App\Modules\Connectors\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_EMPTY', [
+                \App\Modules\Core\Auditing\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_EMPTY', [
                     'resolved_config' => $resolvedConfig
                 ], 'FAILURE');
                 return [];
             }
 
             // Log successful discovery
-            \App\Modules\Connectors\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_COMPLETED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_COMPLETED', [
                 'headers_found_count' => count($headers),
                 'headers' => $headers
             ]);
@@ -67,7 +67,7 @@ class BatchSchemaService
 
         } catch (\Exception $e) {
             // Log the failure with exception details
-            \App\Modules\Connectors\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_FAILED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_FAILED', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ], 'FAILURE');

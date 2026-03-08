@@ -9,6 +9,9 @@ use App\Modules\Connectors\Controllers\ProviderInstanceController;
 use App\Modules\Connectors\Controllers\CommandLogController;
 use App\Modules\Connectors\Controllers\BatchJobController;
 use App\Modules\Core\Dashboard\Controllers\DashboardController;
+use App\Modules\Core\Auditing\Controllers\AuditLogController;
+use App\Modules\Connectors\Controllers\CommandController;
+use App\Modules\Connectors\Controllers\ProviderCategoryController;
 
 /*
 |--------------------------------------------------------------------------
@@ -73,9 +76,25 @@ Route::middleware('auth:api')->group(function () {
                 Route::put('/{id}', [ProviderInstanceController::class, 'update']);
                 Route::delete('/{id}', [ProviderInstanceController::class, 'destroy']);
                 Route::post('/{id}/ping', [ProviderInstanceController::class, 'manualPing']);
-                Route::post('/test-connection', [ProviderInstanceController::class, 'testConnection']);
                 Route::get('/{id}/commands', [ProviderInstanceController::class, 'getCommands']);
+                Route::post('/test-connection', [ProviderInstanceController::class, 'testConnection']);
             });
+
+
+            Route::prefix('commands')->group(function () {
+                Route::get('/', [CommandController::class, 'index']);
+                Route::get('/{id}', [CommandController::class, 'show']); 
+                Route::post('/', [CommandController::class, 'store']);
+                Route::put('/{id}', [CommandController::class, 'update']);
+                Route::delete('/{id}', [CommandController::class, 'destroy']);
+            });
+        });
+
+        //Provider categories
+        Route::prefix('provider-categories')->group(function () {
+            Route::get('/', [ProviderCategoryController::class, 'index']);
+            Route::get('/{slug}/blueprints', [ProviderCategoryController::class, 'blueprints']);
+            Route::get('/{slug}/blueprints/{command}', [ProviderCategoryController::class, 'showBlueprint']);
         });
 
         // Data Sources
@@ -103,6 +122,7 @@ Route::middleware('auth:api')->group(function () {
             Route::prefix('templates')->group(function () {
                 Route::get('/', [BatchJobController::class, 'indexTemplates']);
                 Route::post('/', [BatchJobController::class, 'storeTemplate']);
+                Route::post('/preview-mapping', [BatchJobController::class, 'previewMapping']);
                 
                 Route::prefix('{id}')->group(function () {
                     Route::post('/run', [BatchJobController::class, 'runJob']);
@@ -126,6 +146,15 @@ Route::middleware('auth:api')->group(function () {
             Route::get('/platform-health', [DashboardController::class, 'getPlatformHealth']);
             Route::get('/providers-health', [DashboardController::class, 'getProvidersHealth']);
             Route::get('/recent-activities', [DashboardController::class, 'getRecentActivities']);
+        });
+
+
+        Route::group(['prefix' => 'audit-logs'], function () {
+            Route::get('/', [AuditLogController::class, 'index']); 
+            Route::get('/trace/{traceId}', [AuditLogController::class, 'showTrace']);
+            Route::get('/stats/connectivity', [AuditLogController::class, 'connectivityStats']);
+            Route::get('/security', [AuditLogController::class, 'securityLogs']);
+            Route::get('/export', [AuditLogController::class, 'export']);
         });
     });
 });

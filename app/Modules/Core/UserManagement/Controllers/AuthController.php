@@ -36,9 +36,10 @@ class AuthController extends Controller
         // 1. LDAP/Local verification
         $authDriver = AuthDriverFactory::make();
         if (!$authDriver->authenticate($credentials['username'], $credentials['password'])) {
-            \App\Modules\Connectors\Services\UapLogger::error('Security', 'LOGIN_FAILED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::error('Security', 'LOGIN_FAILED', [
                 'username' => $credentials['username'],
-                'ip' => $request->ip()
+                'ip' => $request->ip(),
+                'reason'   => 'Invalid Credentials'
             ], 'WARNING');
 
             return response()->json(['message' => 'Invalid credentials'], 401);
@@ -57,7 +58,7 @@ class AuthController extends Controller
                 'must_change_password' => false, // LDAP users don't use local password reset flow
             ]);
 
-            \App\Modules\Connectors\Services\UapLogger::info('Security', 'USER_JIT_PROVISIONED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'USER_JIT_PROVISIONED', [
                 'username' => $credentials['username'],
                 'assigned_role' => 'operator',
                 'source' => 'LDAP_SERVER'
@@ -76,7 +77,7 @@ class AuthController extends Controller
         // 4. Generate JWT Token
         $token = auth('api')->login($user);
 
-        \App\Modules\Connectors\Services\UapLogger::info('Security', 'LOGIN_SUCCESS', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'LOGIN_SUCCESS', [
             'user_id' => $user->id,
             'username' => $user->username
         ]);
@@ -153,11 +154,15 @@ class AuthController extends Controller
      */
     public function logout()
     {
-        auth('api')->logout(); // invalidates the token
-
-        return response()->json([
-            'message' => 'Logged out successfully'
+        $user = auth('api')->user();
+        
+        UapLogger::info('Security', 'USER_LOGOUT', [
+            'username' => $user->username ?? 'Unknown',
         ]);
+
+        auth('api')->logout();
+
+        return response()->json(['message' => 'Logged out successfully']);
     }
 
     /**

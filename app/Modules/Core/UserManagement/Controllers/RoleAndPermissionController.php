@@ -51,7 +51,7 @@ class RoleAndPermissionController extends Controller
         $role = Role::findOrFail($id);
         
         // LOG: Permission Escalation/Change
-        \App\Modules\Connectors\Services\UapLogger::info('Security', 'ROLE_PERMISSIONS_UPDATED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'ROLE_PERMISSIONS_UPDATED', [
             'admin_id' => auth()->id(),
             'role_name' => $role->name,
             'new_permissions' => $request->permissions

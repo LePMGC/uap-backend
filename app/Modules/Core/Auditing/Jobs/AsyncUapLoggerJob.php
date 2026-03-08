@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Modules\Connectors\Jobs;
+namespace App\Modules\Core\Auditing\Jobs;
 
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -37,6 +37,7 @@ class AsyncUapLoggerJob implements ShouldQueue
         try {
             $payload = json_encode($this->logData);
             Log::channel('uap')->log($this->level, $payload);
+            broadcast(new \App\Events\AuditLogReceived($this->logData))->toOthers();
         } catch (Throwable $e) {
             // Fallback to default laravel log if the uap channel fails
             Log::error("ASYNC_LOGGER_WRITE_FAILURE", [

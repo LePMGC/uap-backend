@@ -88,7 +88,7 @@ class UserController extends Controller
             $user = $this->userService->updateUserStatus($id, true);
 
             // LOG: Access Revocation
-            \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_BLOCKED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::error('Security', 'USER_BLOCKED', [
                 'admin_id' => auth()->id(),
                 'target_user_id' => $id,
                 'target_username' => $user->username

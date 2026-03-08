@@ -3,8 +3,8 @@
 namespace App\Modules\Connectors\Jobs;
 
 use App\Modules\Connectors\Models\JobInstance;
-use App\Modules\Connectors\Services\BatchItemPipeline;
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Connectors\Services\CommandExecutor;
+use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -12,77 +12,85 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class ProcessBatchChunk implements ShouldQueue
 {
     use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    protected $instance;
-    protected array $chunk;
-    protected ?string $traceId;
+    /**
+     * The number of times the job may be attempted.
+     */
+    public $tries = 3;
 
-    public function __construct($instance, array $chunk, ?string $traceId = null)
-    {
-        $this->instance = $instance;
-        $this->chunk = $chunk;
-        $this->traceId = $traceId;
-    }
+    /**
+     * The number of seconds to wait before retrying the job.
+     */
+    public $backoff = 30;
 
-    public function handle(BatchItemPipeline $pipeline): void
+    public function __construct(
+        protected $instance, 
+        protected array $chunk, 
+        protected int $commandId, 
+        protected ?string $traceId = null
+    ) {}
+
+    /**
+     * Execute the job.
+     */
+    public function handle(CommandExecutor $executor): void
     {
         $instance = JobInstance::with('template')->find($this->instance->id);
         
-        // Safety check for cancelled batches
+        // Safety check: Don't process if the instance is gone or the batch is cancelled
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
             return;
         }
 
-        UapLogger::info('BatchEngine', 'CHUNK_PROCESS_STARTED', [
-            'instance_id' => $instance->id,
-            'chunk_size'  => count($this->chunk),
-        ], $this->traceId);
-
-        $dir = config('connectors.batch.storage_path', 'jobs') . "/{$instance->id}";
+        $dir = "jobs/{$instance->id}";
         $successPath = Storage::path("{$dir}/results_success.csv");
         $failedPath = Storage::path("{$dir}/results_failed.csv");
 
-        // 1. IMPROVEMENT: Use 'c+' mode and flock() for high-concurrency safety
-        $successFile = fopen($successPath, 'c+');
-        $failedFile = fopen($failedPath, 'c+');
+        // Open file handles for appending
+        $successFile = fopen($successPath, 'a');
+        $failedFile = fopen($failedPath, 'a');
 
         $localProcessed = 0;
         $localFailed = 0;
 
         foreach ($this->chunk as $row) {
             try {
-                $log = $pipeline->process($instance, $row, $this->traceId);
+                // 1. Map the CSV row to the specific Command Parameter keys
+                $params = $this->mapRowToParams($row, $instance->template->column_mapping);
 
-                // Extract the error message from the nested response_payload
-                $errorMessage = '';
-                if (!$log->is_successful) {
-                    $payload = $log->response_payload;
-                    $errorMessage = $payload['faultString'] ?? ($payload['response_message'] ?? 'Unknown Error');
-                }
-
-                $resultRow = array_merge($row, [
-                    'batch_status_code'   => $log->response_code,
-                    'batch_is_successful' => $log->is_successful ? 'YES' : 'NO',
-                    'batch_error_message' => $errorMessage,
-                ]);
+                // 2. Execute via the CommandExecutor
+                // This replaces the old BatchItemPipeline logic with the unified execution engine
+                $log = $executor->execute(
+                    $instance->template->provider_instance_id,
+                    $this->commandId,
+                    $params,
+                    $instance->template->user_id,
+                    $instance->id, // Passing JobInstance ID for the log relationship
+                    $this->traceId
+                );
 
                 if ($log->is_successful) {
-                    $this->appendLocked($successFile, $resultRow);
                     $localProcessed++;
+                    $this->appendLocked($successFile, array_merge($row, [
+                        $log->id, 
+                        'YES', 
+                        ''
+                    ]));
                 } else {
-                    $this->appendLocked($failedFile, $resultRow);
-                    $localFailed++;
+                    throw new \Exception($log->raw_response ?? 'Provider rejected request');
                 }
-            } catch (\Exception $e) {
+
+            } catch (Throwable $e) {
                 $localFailed++;
                 $this->appendLocked($failedFile, array_merge($row, [
-                    'batch_status_code'   => '500',
-                    'batch_is_successful' => 'NO',
-                    'batch_error_message' => $e->getMessage()
+                    'N/A', 
+                    'NO', 
+                    $e->getMessage()
                 ]));
             }
         }
@@ -90,7 +98,7 @@ class ProcessBatchChunk implements ShouldQueue
         fclose($successFile);
         fclose($failedFile);
 
-        // 2. OPTIMIZATION: Atomic database updates to avoid deadlocks
+        // 3. Update the counters atomically
         $instance->increment('processed_records', $localProcessed);
         $instance->increment('failed_records', $localFailed);
 
@@ -102,15 +110,27 @@ class ProcessBatchChunk implements ShouldQueue
     }
 
     /**
-     * Helper to handle atomic file appending across concurrent workers
+     * Maps a raw CSV row into an array keyed by Command Parameter names.
+     */
+    protected function mapRowToParams(array $row, array $mapping): array
+    {
+        $params = [];
+        foreach ($mapping as $commandParamKey => $csvHeader) {
+            $params[$commandParamKey] = $row[$csvHeader] ?? null;
+        }
+        return $params;
+    }
+
+    /**
+     * Helper to handle atomic file appending across concurrent workers.
      */
     protected function appendLocked($fileHandle, array $data): void
     {
-        if (flock($fileHandle, LOCK_EX)) { // Exclusive lock
+        if (flock($fileHandle, LOCK_EX)) {
             fseek($fileHandle, 0, SEEK_END);
             fputcsv($fileHandle, $data);
-            fflush($fileHandle); // Force write to disk before releasing lock
-            flock($fileHandle, LOCK_UN); // Release lock
+            fflush($fileHandle);
+            flock($fileHandle, LOCK_UN);
         }
     }
 }

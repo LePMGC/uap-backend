@@ -84,7 +84,7 @@ class CaiProvider extends BaseProvider
         $message = $this->statusRegistry['responses'][$code] ?? "Unknown CAI Code ($code)";
 
         // TELECOM LOGGING
-        \App\Modules\Connectors\Services\UapLogger::log(
+        \App\Modules\Core\Auditing\Services\UapLogger::log(
             'EricssonCAI', 
             'PROVIDER_RESPONSE', 
             $isSuccessful ? 'info' : 'error', 

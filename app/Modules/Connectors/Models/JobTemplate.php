@@ -16,6 +16,7 @@ class JobTemplate extends Model
         'name',
         'provider_instance_id',
         'data_source_id',
+        'command_id',
         'user_id',
 
         // Core configuration
@@ -80,5 +81,13 @@ class JobTemplate extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(\App\Modules\Core\UserManagement\Models\User::class, 'user_id');
+    }
+
+    /**
+     * The specific Command Blueprint this batch will execute
+     */
+    public function command(): BelongsTo
+    {
+        return $this->belongsTo(Command::class);
     }
 }

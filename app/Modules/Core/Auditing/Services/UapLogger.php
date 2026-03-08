@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Modules\Connectors\Services;
+namespace App\Modules\Core\Auditing\Services;
 
-use App\Modules\Connectors\Jobs\AsyncUapLoggerJob;
+use App\Modules\Core\Auditing\Jobs\AsyncUapLoggerJob;
 use Illuminate\Support\Facades\Auth;
 use Throwable;
 

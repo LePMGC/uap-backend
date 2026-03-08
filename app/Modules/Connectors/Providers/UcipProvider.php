@@ -112,7 +112,7 @@ class UcipProvider extends BaseProvider
             \Log::info("userParams: " . json_encode($commandDef['params'] ?? []));
 
             // TELECOM LOGGING: Log the specific provider code and its meaning
-            \App\Modules\Connectors\Services\UapLogger::log(
+            \App\Modules\Core\Auditing\Services\UapLogger::log(
                 'EricssonUCIP', 
                 'PROVIDER_RESPONSE', 
                 $isSuccessful ? 'info' : 'error', 

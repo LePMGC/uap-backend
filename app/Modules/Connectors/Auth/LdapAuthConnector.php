@@ -4,7 +4,7 @@ namespace App\Modules\Connectors\Auth;
 
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 
 class LdapAuthConnector implements AuthConnectorInterface
 {

@@ -3,7 +3,7 @@
 namespace App\Modules\Core\UserManagement\Services;
 
 use App\Modules\Core\UserManagement\Models\User;
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -186,7 +186,7 @@ class UserService
 
         $user->delete();
 
-        \App\Modules\Connectors\Services\UapLogger::error('Security', 'USER_DELETED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::error('Security', 'USER_DELETED', [
             'admin_id' => auth()->id(),
             'deleted_username' => $user->username ?? 'Unknown'
         ], 'CRITICAL');
@@ -195,7 +195,8 @@ class UserService
     /**
      * Update user status (is_blocked)
      */
-    public function updateUserStatus(int $id, $status){
+    public function updateUserStatus(int $id, $status)
+    {
         if (auth()->id() === $id) {
             throw new AccessDeniedHttpException("You cannot update status of your own account.");
         }
@@ -203,6 +204,13 @@ class UserService
         $user = User::findOrFail($id);
         $user->is_blocked = $status;
         $user->save();
+
+        // Audit the status change
+        UapLogger::info('Security', 'USER_STATUS_CHANGED', [
+            'target_user' => $user->username,
+            'new_status'  => $status ? 'BLOCKED' : 'ACTIVE',
+            'actor'       => auth()->user()->username
+        ]);
 
         return $user;
     }

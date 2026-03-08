@@ -4,7 +4,7 @@ namespace App\Modules\Connectors\DataSources;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Config;
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 
 class DatabaseConnector implements DataSourceInterface
 {

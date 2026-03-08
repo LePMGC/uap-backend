@@ -147,7 +147,7 @@ abstract class BaseProvider
             return true;
         } catch (\Exception $e) {
             // Log the failure details via our custom logger for auditing
-            \App\Modules\Connectors\Services\UapLogger::error('NetworkAudit', 'PRE_SAVE_CHECK_FAILED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::error('NetworkAudit', 'PRE_SAVE_CHECK_FAILED', [
                 'host'  => $this->config['host'] ?? 'N/A',
                 'error' => $e->getMessage()
             ]);

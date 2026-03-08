@@ -31,36 +31,59 @@ class CommandLogController extends Controller implements HasMiddleware
         ];
     }
 
-    /**
+/**
      * List command logs with intelligent permission filtering and UI metadata.
      */
     public function index(Request $request): AnonymousResourceCollection|JsonResponse
     {
         $user = auth()->user();
-        $query = CommandLog::with(['user:id,username', 'instance:id,name']);
+        
+        // Eager load 'command' to show the friendly name in the log table
+        $query = CommandLog::with(['user:id,username', 'instance:id,name', 'command:id,name']);
 
         // 1. Authorization Logic
         if (!$user->can('view_all_command_logs')) {
             if ($user->can('view_own_command_logs')) {
                 $query->where('user_id', $user->id);
             } else {
-                return response()->json(['message' => 'Unauthorized to view logs'], 403);
+                return response()->json(['message' => 'Forbidden'], 403);
             }
         }
-        
-        // 2. Filters
-        if ($request->has('command_name')) {
-            $query->where('command_name', $request->command_name);
-        }
-        if ($request->has('is_successful')) {
-            $query->where('is_successful', $request->boolean('is_successful'));
-        }
-        if ($request->has('provider_instance_id')) {
-            $query->where('provider_instance_id', $request->provider_instance_id);
+
+        // 2. New Filters
+        if ($request->has('command_id')) {
+            $query->where('command_id', $request->command_id);
         }
 
-        // Return wrapped in Resource for metadata (response_format, etc)
-        return CommandLogResource::collection($query->latest()->paginate(20));
+        if ($request->has('instance_id')) {
+            $query->where('provider_instance_id', $request->instance_id);
+        }
+
+        if ($request->has('category')) {
+            $query->where('category_slug', $request->category);
+        }
+
+        if ($request->has('status')) {
+            $isSuccessful = $request->status === 'success';
+            $query->where('is_successful', $isSuccessful);
+        }
+
+        if ($request->has('date')) {
+            $query->whereDate('created_at', $request->date);
+        }
+
+        // 3. Search by MSISDN (Searching within JSON request_payload)
+        if ($request->has('search')) {
+            $searchTerm = $request->search;
+            $query->where(function($q) use ($searchTerm) {
+                $q->where('request_payload', 'LIKE', "%{$searchTerm}%")
+                  ->orWhere('command_name', 'LIKE', "%{$searchTerm}%");
+            });
+        }
+
+        $logs = $query->latest()->paginate($request->query('per_page', 15));
+
+        return CommandLogResource::collection($logs);
     }
 
     /**
@@ -79,36 +102,26 @@ class CommandLogController extends Controller implements HasMiddleware
     }
 
     /**
-     * Execute a new command and return the resulting log entry.
+     * Execute a new command using command_id.
      */
     public function store(Request $request): CommandLogResource|JsonResponse
     {
-        \App\Modules\Connectors\Services\UapLogger::info('ProviderInterface', 'UI_SINGLE_COMMAND_EXECUTION', [
-            'command' => $request->command_name,
-            'instance_id' => $request->instance_id,
-            'params_sent' => array_keys($request->params) // Log keys only for security
-        ]);
-
-        $traceId = $request->header('X-Request-ID');
-
         $validated = $request->validate([
             'instance_id' => 'required|integer|exists:provider_instances,id',
-            'command_name' => 'required|string',
-            'params' => 'required|array',
+            'command_id'  => 'required|integer|exists:commands,id', // Changed from name to ID
+            'params'      => 'required', // Array for form, String for raw code
         ]);
 
         try {
-            // Updated Executor should return the CommandLog Model instance
             $logEntry = $this->executor->execute(
                 $validated['instance_id'],
-                $validated['command_name'],
+                $validated['command_id'],
                 $validated['params'],
                 auth()->id(),
                 null,
-                $traceId
+                $request->header('X-Request-ID')
             );
 
-            // Return the resource so FE knows the response format (XML/MML) immediately
             return new CommandLogResource($logEntry);
 
         } catch (\Exception $e) {

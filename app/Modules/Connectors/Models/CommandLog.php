@@ -16,6 +16,7 @@ class CommandLog extends Model
     protected $fillable = [
         'user_id',
         'provider_instance_id',
+        'command_id',
         'command_name',
         'category_slug',
         'request_payload',
@@ -52,5 +53,13 @@ class CommandLog extends Model
     public function jobInstance(): BelongsTo
     {
         return $this->belongsTo(JobInstance::class, 'job_instance_id');
+    }
+
+    /**
+     * Relationship to the Command Blueprint
+     */
+    public function command(): BelongsTo
+    {
+        return $this->belongsTo(Command::class, 'command_id');
     }
 }

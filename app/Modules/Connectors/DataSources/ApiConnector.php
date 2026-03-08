@@ -1,7 +1,7 @@
 <?php
 namespace App\Modules\Connectors\DataSources;
 
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Support\Facades\Http;
 
 class ApiConnector implements DataSourceInterface

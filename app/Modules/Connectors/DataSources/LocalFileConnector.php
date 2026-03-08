@@ -2,7 +2,7 @@
 
 namespace App\Modules\Connectors\DataSources;
 
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Support\Facades\Storage;
 use League\Csv\Reader;
 

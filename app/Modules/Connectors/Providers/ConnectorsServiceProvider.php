@@ -6,17 +6,16 @@ use Illuminate\Support\ServiceProvider;
 
 class ConnectorsServiceProvider extends ServiceProvider
 {
-    public function register()
+    public function register(): void
     {
-        // This merges your module config into the main Laravel config tree
-        // under the 'providers' key.
+        // This line tells Laravel to include your file in the global config array
         $this->mergeConfigFrom(
-            __DIR__.'/../Config/blueprints.php', 'providers'
+            __DIR__.'/../Config/blueprints.php', 'blueprints'
         );
     }
 
-    public function boot()
+    public function boot(): void
     {
-        // Register migrations or routes if not already done via main app
+        // ... other boot logic like loading routes/migrations
     }
 }

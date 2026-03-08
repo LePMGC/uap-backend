@@ -86,7 +86,7 @@ class DataSourceController extends Controller implements HasMiddleware
     public function testConnection(Request $request)
     {
 
-        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'DATASOURCE_CONNECTION_TEST', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('SystemAudit', 'DATASOURCE_CONNECTION_TEST', [
             'type' => $request->type,
             'host' => $request->connection_settings['host'] ?? 'N/A'
         ]);
@@ -151,7 +151,7 @@ class DataSourceController extends Controller implements HasMiddleware
             'is_active' => 'sometimes|boolean'
         ]);
 
-        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'DATASOURCE_UPDATED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('SystemAudit', 'DATASOURCE_UPDATED', [
             'user_id' => auth()->id(),
             'source_id' => $id,
             'changes' => array_keys($request->all())
@@ -180,7 +180,7 @@ class DataSourceController extends Controller implements HasMiddleware
             ], 404);
         }
 
-         \App\Modules\Connectors\Services\UapLogger::error('SystemAudit', 'DATASOURCE_DELETED', [
+         \App\Modules\Core\Auditing\Services\UapLogger::error('SystemAudit', 'DATASOURCE_DELETED', [
             'user_id' => auth()->id(),
             'source_name' => $dataSource->name
         ], 'CRITICAL');

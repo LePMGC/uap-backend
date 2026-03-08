@@ -14,13 +14,14 @@ use Cron\CronExpression;
 use Spatie\Permission\Middleware\PermissionMiddleware;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
-
+use App\Modules\Connectors\Services\BatchValidationService;
 
 class BatchJobController extends Controller
 {
     public function __construct(
         protected BatchOrchestrator $orchestrator,
-        protected BatchSchemaService $schemaService
+        protected BatchSchemaService $schemaService,
+        protected BatchValidationService $validatorService
     ) {}
 
     public static function middleware(): array
@@ -91,7 +92,7 @@ class BatchJobController extends Controller
             // CASE B: Existing DataSource (SFTP, DB, API)
             $dataSource = \App\Modules\Connectors\Models\DataSource::findOrFail($request->data_source_id);
 
-            \App\Modules\Connectors\Services\UapLogger::info('SchemaService', 'REMOTE_HEADER_DISCOVERY_REQUESTED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'REMOTE_HEADER_DISCOVERY_REQUESTED', [
                 'user_id' => auth()->id(),
                 'source_name' => $source->name,
                 'config_keys' => array_keys($request->source_config)
@@ -119,6 +120,7 @@ class BatchJobController extends Controller
             'provider_instance_id' => 'required|exists:provider_instances,id',
             'data_source_id'       => 'required|exists:data_sources,id',
             'command_name'         => 'required|string',
+            'command_id'           => 'required|exists:commands,id',
             'expected_columns'     => 'required|array|min:1',
             'column_mapping'       => 'required|array',
             'job_specific_config'  => 'required|array',
@@ -177,7 +179,7 @@ class BatchJobController extends Controller
 
         $template = JobTemplate::create($data);
 
-        \App\Modules\Connectors\Services\UapLogger::info('BatchEngine', 'TEMPLATE_CREATED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('BatchEngine', 'TEMPLATE_CREATED', [
             'template_id' => $template->id,
             'name' => $template->name
         ]);
@@ -247,7 +249,7 @@ class BatchJobController extends Controller
         $template = JobTemplate::findOrFail($id);
 
         // 1. LOG: Capturing the destructive intent before it happens
-        \App\Modules\Connectors\Services\UapLogger::error('SystemAudit', 'BATCH_TEMPLATE_DELETION_INITIATED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::error('SystemAudit', 'BATCH_TEMPLATE_DELETION_INITIATED', [
             'user_id'       => auth()->id(),
             'template_id'   => $id,
             'template_name' => $template->name,
@@ -278,7 +280,7 @@ class BatchJobController extends Controller
     {
         $instance = JobInstance::findOrFail($instanceId);
 
-        \App\Modules\Connectors\Services\UapLogger::info('BatchEngine', 'INSTANCE_STATUS_VIEWED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('BatchEngine', 'INSTANCE_STATUS_VIEWED', [
             'instance_id' => $instanceId,
             'current_status' => $instance->status,
             'user_id' => auth()->id()
@@ -294,6 +296,30 @@ class BatchJobController extends Controller
                 'percentage' => $instance->progress_percentage
             ]
         ]);
+    }
+
+    /**
+     * POST /api/batch/preview-mapping
+     */
+    public function previewMapping(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'temporary_path' => 'required|string',
+            'command_id'     => 'required|exists:commands,id',
+            'column_mapping' => 'required|array',
+        ]);
+
+        try {
+            $preview = $this->validator->previewMapping(
+                $validated['temporary_path'],
+                $validated['command_id'],
+                $validated['column_mapping']
+            );
+
+            return response()->json($preview);
+        } catch (\Exception $e) {
+            return response()->json(['error' => $e->getMessage()], 422);
+        }
     }
 
     public function toggleSchedule(string $id)
@@ -348,7 +374,7 @@ class BatchJobController extends Controller
     {
         $instance = JobInstance::findOrFail($instanceId);
 
-        \App\Modules\Connectors\Services\UapLogger::error('BatchEngine', 'JOB_MANUALLY_CANCELLED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::error('BatchEngine', 'JOB_MANUALLY_CANCELLED', [
             'instance_id' => $instanceId,
             'user_id'     => auth()->id()
         ], 'WARNING');

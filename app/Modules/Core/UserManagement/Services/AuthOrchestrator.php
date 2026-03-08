@@ -13,7 +13,7 @@ class AuthOrchestrator
         $mode = SystemSetting::where('key', 'authentication_provider')->value('value');
 
         // 1. Log the attempt and the selected mode
-        \App\Modules\Connectors\Services\UapLogger::info('Security', 'AUTH_ATTEMPT_INITIATED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'AUTH_ATTEMPT_INITIATED', [
             'username' => $username,
             'mode_selected' => ($username === 'admin_emergency') ? 'emergency_local' : $mode
         ]);

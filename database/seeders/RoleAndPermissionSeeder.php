@@ -40,6 +40,22 @@ class RoleAndPermissionSeeder extends Seeder
             
             // Scheduling
             'manage_batch_schedules', 
+
+            // 1. Audit & Observability Permissions
+            'view_audit_logs',
+            'view_security_logs',
+            'view_trace_timeline', 
+            'view_connectivity_stats',
+            'export_audit_logs', 
+
+            // 2. Command Metadata Management (The "Blueprints")
+            'view_commands', 
+            'manage_commands',
+
+            // Provider categories
+            'view_provider_categories',
+            'view_command_blueprints',
+            'manage_batch_templates',
         ];
 
         // 2. Dynamic Command Action Permissions
@@ -89,6 +105,20 @@ class RoleAndPermissionSeeder extends Seeder
             'view_batch_instances',
             'download_batch_results',
             'download_batch_report',
+            'execute_commands',
+            'view_provider_categories',
+            'view_command_blueprints',
+            'manage_batch_templates',
+            
+            'view_own_command_logs',
+            
+            // New Observability Permissions for Operators
+            'view_audit_logs',
+            'view_trace_timeline',
+            'view_connectivity_stats',
+            
+            // New Command Permissions for Operators
+            'view_commands', // So they can see the forms to fill them out
         ];
 
         $operator->syncPermissions($operatorPermissions);

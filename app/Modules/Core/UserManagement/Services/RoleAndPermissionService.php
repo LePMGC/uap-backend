@@ -57,7 +57,7 @@ class RoleAndPermissionService
             $role->syncPermissions($permissions);
             
             // LOG: Privilege change audit
-            \App\Modules\Connectors\Services\UapLogger::info('Security', 'ROLE_PERMISSIONS_SYNCED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'ROLE_PERMISSIONS_SYNCED', [
                 'actor' => auth()->user()->username ?? 'SYSTEM',
                 'role' => $role->name,
                 'added' => array_diff($permissions, $oldPermissions),
@@ -92,7 +92,7 @@ class RoleAndPermissionService
             $role->syncPermissions($permissions);
             
             // LOG: Privilege change audit
-            \App\Modules\Connectors\Services\UapLogger::info('Security', 'ROLE_UPDATED', [
+            \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'ROLE_UPDATED', [
                 'actor' => auth()->user()->username ?? 'SYSTEM',
                 'old_role_name' => $oldName,
                 'new_role_name' => $name,

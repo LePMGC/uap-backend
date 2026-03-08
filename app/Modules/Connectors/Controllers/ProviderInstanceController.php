@@ -11,6 +11,7 @@ use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
 use App\Modules\Connectors\Services\CommandExecutor;
 use App\Modules\Connectors\Services\PermissionEvaluator;
+use App\Modules\Connectors\Models\Command;
 
 class ProviderInstanceController extends Controller  implements HasMiddleware
 {
@@ -35,6 +36,10 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
     public function index(Request $request): JsonResponse
     {
         $query = ProviderInstance::query();
+
+        if ($request->has('search') && !empty($request->search)) {
+            $query->where('name', 'like', '%' . $request->search . '%');
+        }
 
         if ($request->has('category') && !empty($request->category)) {
             $query->where('category_slug', $request->category);
@@ -65,7 +70,7 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
 
         $instance = ProviderInstance::create($validated);
 
-        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'PROVIDER_INSTANCE_CREATED', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('SystemAudit', 'PROVIDER_INSTANCE_CREATED', [
             'user_id' => auth()->id(),
             'provider_name' => $instance->name,
             'category' => $instance->category_slug
@@ -98,7 +103,7 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
     {
         $instance = ProviderInstance::find($id);
 
-        \App\Modules\Connectors\Services\UapLogger::info('SystemAudit', 'PROVIDER_CONFIG_UPDATE_ATTEMPT', [
+        \App\Modules\Core\Auditing\Services\UapLogger::info('SystemAudit', 'PROVIDER_CONFIG_UPDATE_ATTEMPT', [
             'instance_id' => $id,
             'updated_fields' => array_keys($request->all())
         ]);
@@ -167,10 +172,9 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
             $instance->refresh();
 
             // 2. Log the RESULT of the ping
-            // We use info for success and error for failures to make the audit log filterable
             $logMethod = $instance->is_active ? 'info' : 'error';
             
-            \App\Modules\Connectors\Services\UapLogger::$logMethod('NetworkAudit', 'MANUAL_CONNECTIVITY_TEST', [
+            \App\Modules\Core\Auditing\Services\UapLogger::$logMethod('NetworkAudit', 'MANUAL_CONNECTIVITY_TEST', [
                 'provider_name' => $instance->name,
                 'category'      => $instance->category_slug,
                 'host'          => $instance->connection_settings['host'] ?? 'N/A',
@@ -178,15 +182,21 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
                 'error_details' => $instance->last_error_message ?? 'None'
             ]);
 
+            if (!$instance->is_active) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Node is unreachable',
+                    'error'   => $instance->last_error_message,
+                ], 503); // Service Unavailable
+            }
+
             return response()->json([
-                'success' => $instance->is_active,
-                'message' => $instance->is_active ? 'Node is reachable' : 'Node is unreachable',
-                'error'   => $instance->last_error_message,
+                'success' => true,
+                'message' => 'Node is reachable',
             ]);
 
         } catch (\Exception $e) {
-            // Log the system exception (e.g., code crash vs network timeout)
-            \App\Modules\Connectors\Services\UapLogger::error('NetworkAudit', 'CONNECTIVITY_TEST_CRASH', [
+            \App\Modules\Core\Auditing\Services\UapLogger::error('NetworkAudit', 'CONNECTIVITY_TEST_CRASH', [
                 'provider_id' => $id,
                 'exception'   => $e->getMessage()
             ]);
@@ -199,53 +209,27 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
     }
 
     /**
-     * Returns available commands for a specific provider instance.
+     * Get all commands available for a specific provider instance.
      */
-    public function getCommands(Request $request, int $instanceId)
+    public function getCommands(int $id): JsonResponse
     {
-        $instance = ProviderInstance::findOrFail($instanceId);
-        $user = auth()->user();
-        $executor = new \App\Modules\Connectors\Services\CommandExecutor();
-        $shouldGroup = $request->query('grouped', 'true') === 'true';
-        
-        // 1. Get all command names in the folder
-        $allCommandNames = $executor->getAvailableCommandNames($instance->category_slug);
-        
-        $allowed = collect();
+        $instance = ProviderInstance::findOrFail($id);
 
-        foreach ($allCommandNames as $name) {
-            $blueprint = $executor->getBlueprint($instance->category_slug, $name);
-            
-            // 2. Check Permissions
-            if (\App\Modules\Connectors\Services\PermissionEvaluator::canUserAccessCommand(
-                $user, 
-                $instance->category_slug, 
-                $name, 
-                $blueprint
-            )) {
-                $allowed->push([
-                    'name' => $name,
-                    'description' => $blueprint['description'] ?? '',
-                    'action' => $blueprint['action'] ?? 'run'
-                ]);
-            }
-        }
+        // Fetch commands from DB based on the instance category
+        $commands = Command::where('category_slug', $instance->category_slug)
+            ->where(function ($query) {
+                // Include Global commands OR those created by the current user
+                $query->where('is_custom', false)
+                      ->orWhere('created_by', auth()->id());
+            })
+            ->orderBy('name', 'asc')
+            ->get(['id', 'name', 'command_key', 'description', 'is_custom']);
 
-        if (!$shouldGroup) {
-            // Return a flat, alphabetically sorted list
-            return response()->json([
-                'data' => $allowed->sortBy('name')->values()->all()
-            ]);
-        }
-
-        // 3. Group and Sort
-        $grouped = $allowed
-            ->sortBy('name') // Sort commands alphabetically within groups first
-            ->groupBy('action') // Group by action type
-            ->sortKeys() // Sort the groups by the action name (view, update, etc.)
-            ->toArray();
-
-        return response()->json($grouped);
+        return response()->json([
+            'instance_name' => $instance->name,
+            'category' => $instance->category_slug,
+            'commands' => $commands
+        ]);
     }
 
     /**
@@ -317,25 +301,31 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
             }
 
             $provider = ProviderFactory::make($settings, $blueprint);
-            $isSuccessful = $provider->checkConnectivity();
-
+            $isReachable = $provider->checkConnectivity(); 
             
-            \App\Modules\Connectors\Services\UapLogger::info('NetworkAudit', 'PRE_SAVE_CONNECTIVITY_TEST', [
+            \App\Modules\Core\Auditing\Services\UapLogger::info('NetworkAudit', 'PRE_SAVE_CONNECTIVITY_TEST', [
                 'category' => $category,
                 'host'     => $settings['host'],
                 'result'   => $isReachable ? 'SUCCESS' : 'FAILED'
             ]);
 
+            if (!$isReachable) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unable to reach host. Please check network settings, credentials, and firewall rules.',
+                ], 503); // Service Unavailable
+            }
+
             return response()->json([
-                'success' => $isReachable,
-                'message' => $isReachable ? 'Connection established successfully' : 'Unable to reach host',
+                'success' => true,
+                'message' => 'Connection established successfully',
             ]);
 
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Connection test failed: ' . $e->getMessage()
-            ], 200);
+            ], 500);
         }
     }
 }

@@ -4,7 +4,7 @@ namespace App\Modules\Connectors\DataSources;
 
 use Illuminate\Support\Facades\Storage;
 use League\Csv\Reader;
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 
 class SftpConnector implements DataSourceInterface
 {

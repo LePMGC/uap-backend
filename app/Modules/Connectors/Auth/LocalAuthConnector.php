@@ -5,7 +5,7 @@ namespace App\Modules\Connectors\Auth;
 use App\Modules\Core\UserManagement\Models\User;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
-use App\Modules\Connectors\Services\UapLogger;
+use App\Modules\Core\Auditing\Services\UapLogger;
 
 class LocalAuthConnector implements AuthConnectorInterface
 {
