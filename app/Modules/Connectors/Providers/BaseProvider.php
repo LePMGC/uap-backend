@@ -157,4 +157,6 @@ abstract class BaseProvider
     }
 
     abstract public function checkHealth(): bool;
+
+    abstract public function extractSystemParams(string $rawPayload): array;
 }

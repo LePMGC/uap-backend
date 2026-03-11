@@ -3,27 +3,38 @@
 namespace App\Http\Middleware;
 
 use Closure;
-use App\Modules\Connectors\Services\CommandExecutor;
-use App\Modules\Connectors\Services\PermissionEvaluator;
-use App\Modules\Connectors\Models\ProviderInstance;
+use Illuminate\Http\Request;
+use App\Modules\Connectors\Models\Command;
+use Symfony\Component\HttpFoundation\Response;
 
 class CheckCommandPermission
 {
-    public function handle($request, Closure $next)
+    /**
+     * Handle an incoming request.
+     */
+    public function handle(Request $request, Closure $next): Response
     {
-        $instanceId = $request->input('instance_id');
-        $commandName = $request->input('command_name');
+        // 1. Get the command_id from the request
+        $commandId = $request->input('command_id');
 
-        $instance = ProviderInstance::findOrFail($instanceId);
-        $executor = new CommandExecutor();
-        
-        // Get the blueprint to check the 'action'
-        $blueprint = $executor->getBlueprint($instance->category_slug, $commandName);
+        if (!$commandId) {
+            return response()->json(['message' => 'Command ID is required'], 400);
+        }
 
-        if (!PermissionEvaluator::canUserAccessCommand(auth()->user(), $instance->category_slug, $commandName, $blueprint)) {
+        // 2. Fetch the command from the database
+        $command = Command::find($commandId);
+
+        if (!$command) {
+            return response()->json(['message' => 'Command not found'], 404);
+        }
+
+        // 3. Check if the user has permission to execute this specific command key
+        // Permission pattern example: "execute_Refill" or "execute_InstallSubscriber"
+        $permission = 'execute_' . $command->command_key;
+
+        if (!auth()->user()->can($permission) && !auth()->user()->hasRole('admin')) {
             return response()->json([
-                'success' => false,
-                'message' => "Forbidden: You do not have permission to run '{$commandName}'"
+                'message' => "You do not have permission to execute the command: {$command->name}"
             ], 403);
         }
 

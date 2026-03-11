@@ -1,9 +1,9 @@
 <?php
 
 return [
-    'method' => 'GetAccumulators',
+    'method' => 'GetBalanceAndDate',
     'action' => 'view',
-    'description' => 'Retrieve accumulator information',
+    'description' => 'Retrieve account balances information',
     'system_params' => [
         'originNodeType' => 'EXT',
         'originHostName' => '{host_name}',
@@ -12,7 +12,7 @@ return [
     ],
     'request_payload' => '<?xml version="1.0"?>
 <methodCall>
-	<methodName>GetAccumulators</methodName>
+	<methodName>GetBalanceAndDate</methodName>
 	<params>
 		<param>
 			<value>
@@ -20,7 +20,7 @@ return [
 					<member>
 						<name>originNodeType</name>
 						<value>
-							<string>EXT</string>
+							<string>EXT154</string>
 						</value>
 					</member>
 					<member>
@@ -32,7 +32,7 @@ return [
 					<member>
 						<name>originTransactionID</name>
 						<value>
-							<string>1171947349734</string>
+							<string>0142717719473443940</string>
 						</value>
 					</member>
 					<member>
@@ -50,7 +50,7 @@ return [
 					<member>
 						<name>subscriberNumber</name>
 						<value>
-							<string>069740908</string>
+							<string>065029221</string>
 						</value>
 					</member>
 				</struct>

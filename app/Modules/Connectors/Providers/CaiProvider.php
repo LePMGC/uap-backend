@@ -146,4 +146,20 @@ class CaiProvider extends BaseProvider
             return false;
         }
     }
+
+
+    public function extractSystemParams(string $rawPayload): array
+    {
+        $detected = [];
+        $keys = ['originHostName', 'originTransactionID'];
+
+        foreach ($keys as $key) {
+            // Regex for KEY,VALUE patterns in MML
+            if (preg_match("/{$key},([^:;,\s]+)/i", $rawPayload, $matches)) {
+                $detected[$key] = trim($matches[1]);
+            }
+        }
+
+        return $detected;
+    }
 }

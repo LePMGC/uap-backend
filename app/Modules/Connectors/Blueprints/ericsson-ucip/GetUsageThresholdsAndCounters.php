@@ -1,9 +1,9 @@
 <?php
 
 return [
-    'method' => 'GetAccumulators',
+    'method' => 'GetUsageThresholdsAndCounters',
     'action' => 'view',
-    'description' => 'Retrieve accumulator information',
+    'description' => 'Retrieve usage counters and thresholds information',
     'system_params' => [
         'originNodeType' => 'EXT',
         'originHostName' => '{host_name}',
@@ -12,7 +12,7 @@ return [
     ],
     'request_payload' => '<?xml version="1.0"?>
 <methodCall>
-	<methodName>GetAccumulators</methodName>
+	<methodName>GetUsageThresholdsAndCounters</methodName>
 	<params>
 		<param>
 			<value>
@@ -32,13 +32,13 @@ return [
 					<member>
 						<name>originTransactionID</name>
 						<value>
-							<string>1171947349734</string>
+							<string>11271947355991</string>
 						</value>
 					</member>
 					<member>
 						<name>originTimeStamp</name>
 						<value>
-							<dateTime.iso8601>20260224T15:35:49+0100</dateTime.iso8601>
+							<dateTime.iso8601>20260224T15:35:56+0100</dateTime.iso8601>
 						</value>
 					</member>
 					<member>
@@ -50,7 +50,7 @@ return [
 					<member>
 						<name>subscriberNumber</name>
 						<value>
-							<string>069740908</string>
+							<string>065605712</string>
 						</value>
 					</member>
 				</struct>

@@ -21,20 +21,54 @@ class UcipProvider extends BaseProvider
     protected function login(): void {} 
     protected function logout(): void {}
 
-    // app/Modules/Connectors/Providers/UcipProvider.php
-
+    /**
+     * Builds the UCIP XML-RPC payload, injecting ONLY authorized system parameters.
+     */
     protected function buildPayload(array $commandDef, array $params): string
     {
         $method = $commandDef['method'];
+        
+        // 1. Define the Available System Parameter Pool
+        $pool = [
+            'originNodeType'      => $this->config['origin_node_type'] ?? 'EXT',
+            'originHostName'      => $this->config['host'] ?? 'UAP-Server',
+            'originTransactionID' => $this->generateTransactionId(),
+            'originTimeStamp'     => now()->format('Ymd\TH:i:s+0000'),
+        ];
+
+        // 2. Filter the pool based on what is defined in the command
+        // We look into 'system_params' which we will pass from the Executor
+        $allowedSystemKeys = $commandDef['system_params'] ?? [];
+        $authorizedSystemParams = [];
+
+        foreach ($allowedSystemKeys as $key => $placeholder) {
+            // If the key exists in our pool, we include it
+            if (array_key_exists($key, $pool)) {
+                $authorizedSystemParams[$key] = $pool[$key];
+            }
+        }
+
+        // 3. Merge only the authorized ones with user params
+        $finalParams = array_merge($authorizedSystemParams, $params);
+
         $xml = "<?xml version=\"1.0\"?>\n<methodCall>\n<methodName>{$method}</methodName>\n<params>\n<param>\n<value><struct>\n";
         
-        foreach ($params as $key => $value) {
+        foreach ($finalParams as $key => $value) {
             $xml .= "<member><name>{$key}</name><value>";
             $xml .= $this->encodeValue($value);
             $xml .= "</value></member>\n";
         }
 
         return $xml . "</struct></value></param></params>\n</methodCall>";
+    }
+
+    /**
+     * Helper to generate a unique transaction ID for UCIP
+     */
+    private function generateTransactionId(): string
+    {
+        // UCIP often expects a numeric or alphanumeric string
+        return (string)mt_rand(100000000, 999999999);
     }
 
     /**
@@ -243,5 +277,32 @@ class UcipProvider extends BaseProvider
     private function buildHeartbeatPayload(): string
     {
         return "<?xml version='1.0'?><methodCall><methodName>GetCapabilities</methodName></methodCall>";
+    }
+
+
+   
+    public function extractSystemParams(string $rawPayload): array
+    {
+        $detected = [];
+        
+        // The specific keys to look for in UCIP XML
+        $map = [
+            'originNodeType'      => 'EXT',
+            'originHostName'      => '{host_name}',
+            'originTransactionID' => '{auto_gen_id}',
+            'originTimeStamp'     => '{auto_gen_iso8601}',
+        ];
+
+        foreach ($map as $key => $placeholder) {
+            // Regex to find content inside <name>key</name><value><type>value</type></value>
+            $pattern = "/<name>{$key}<\/name>\s*<value>\s*<[^>]+>([^<]+)<\/[^>]+>\s*<\/value>/i";
+            
+            // If the key exists in the raw payload, we assign it the defined platform value
+            if (preg_match($pattern, $rawPayload)) {
+                $detected[$key] = $placeholder;
+            }
+        }
+
+        return $detected;
     }
 }

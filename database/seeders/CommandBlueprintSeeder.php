@@ -11,68 +11,49 @@ class CommandBlueprintSeeder extends Seeder
 {
     public function run(): void
     {
-        $category = 'ericsson-ucip';
-        $path = app_path("Modules/Connectors/Blueprints/{$category}");
+        // 1. Get all categories defined in the central config
+        $blueprints = config('blueprints');
 
-        if (!File::exists($path)) {
+        if (!is_array($blueprints)) {
+            $this->command->error("Blueprints configuration not found. Ensure the ServiceProvider merges the config.");
             return;
         }
 
-        $files = File::files($path);
+        foreach ($blueprints as $categorySlug => $categoryConfig) {
+            $this->command->info("Seeding category: {$categorySlug}");
 
-        foreach ($files as $file) {
-            $data = include $file->getRealPath();
+            // Define the path to the blueprint files for this specific category
+            $path = app_path("Modules/Connectors/Blueprints/{$categorySlug}");
 
-            // 1. Create the Command
-            $command = Command::updateOrCreate(
-                ['category_slug' => $category, 'command_key' => $data['method']],
-                [
-                    'name'          => ucwords(str_replace(['_', '-'], ' ', $data['method'])),
-                    'action'        => $data['action'] ?? 'view',
-                    'description'   => $data['description'] ?? '',
-                    'system_params' => $data['system_params'] ?? [],
-                    'is_custom'     => false,
-                    // Technical users will use this template; initially, we can leave it
-                    // for them to populate or generate a default XML structure here.
-                    'payload_template' => null, 
-                ]
-            );
-
-            // 2. Clear old parameters if re-seeding
-            $command->allParameters()->delete();
-
-            // 3. Process User Parameters
-            if (!empty($data['user_params'])) {
-                $this->processParameters($command->id, $data['user_params']);
+            if (!File::exists($path)) {
+                $this->command->warn("Directory missing for {$categorySlug} at: {$path}");
+                continue;
             }
-        }
-    }
 
-    /**
-     * Recursively process parameters and nested structs
-     */
-    protected function processParameters($commandId, array $params, $parentId = null): void
-    {
-        $order = 0;
-        foreach ($params as $name => $spec) {
-            $parameter = CommandParameter::create([
-                'command_id'   => $commandId,
-                'parent_id'    => $parentId,
-                'name'         => $name,
-                'label'        => $spec['label'] ?? ucwords($name),
-                'type'         => $spec['type'] ?? 'string',
-                'is_mandatory' => $spec['mandatory'] ?? false,
-                'default_value'=> $spec['default'] ?? null,
-                'sort_order'   => $order++,
-                'validation_rules' => [
-                    'required' => $spec['mandatory'] ?? false,
-                    'type'     => $spec['type'] ?? 'string'
-                ]
-            ]);
+            $files = File::files($path);
 
-            // If it's a struct with nested fields, recurse
-            if (isset($spec['fields']) && is_array($spec['fields'])) {
-                $this->processParameters($commandId, $spec['fields'], $parameter->id);
+            foreach ($files as $file) {
+                // Ensure we only process PHP files
+                if ($file->getExtension() !== 'php') continue;
+
+                $data = include $file->getRealPath();
+                $commandKey = basename($file->getFilename(), '.php');
+
+                // 2. Update or Create the Command record
+                $command = Command::updateOrCreate(
+                    [
+                        'category_slug' => $categorySlug, 
+                        'command_key'   => $commandKey
+                    ],
+                    [
+                        'name'             => $data['name'] ?? ucwords(str_replace(['_', '-'], ' ', $commandKey)),
+                        'action'           => $data['action'] ?? 'view',
+                        'description'      => $data['description'] ?? '',
+                        'system_params'    => $data['system_params'] ?? [],
+                        'is_custom'        => false,
+                        'request_payload' => $data['request_payload'] ?? null, 
+                    ]
+                );
             }
         }
     }

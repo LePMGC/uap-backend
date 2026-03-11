@@ -5,12 +5,12 @@ namespace App\Modules\Connectors\Controllers;
 use App\Http\Controllers\Controller;
 use App\Modules\Connectors\Models\CommandLog;
 use App\Modules\Connectors\Services\CommandExecutor;
-use App\Modules\Connectors\Resources\CommandLogResource; // New Resource
-use Illuminate\Http\Request;
+use App\Modules\Connectors\Resources\CommandLogResource;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Http\Request;
 
 class CommandLogController extends Controller implements HasMiddleware
 {
@@ -108,8 +108,8 @@ class CommandLogController extends Controller implements HasMiddleware
     {
         $validated = $request->validate([
             'instance_id' => 'required|integer|exists:provider_instances,id',
-            'command_id'  => 'required|integer|exists:commands,id', // Changed from name to ID
-            'params'      => 'required', // Array for form, String for raw code
+            'command_id'  => 'required|integer|exists:commands,id',
+            'params'      => 'required', 
         ]);
 
         try {

@@ -9,7 +9,7 @@ class Command extends Model
 {
     protected $fillable = [
         'category_slug', 'name', 'command_key', 'action', 
-        'description', 'payload_template', 'system_params', 
+        'description', 'request_payload', 'system_params', 
         'is_custom', 'created_by'
     ];
 
@@ -17,17 +17,4 @@ class Command extends Model
         'system_params' => 'json',
         'is_custom' => 'boolean',
     ];
-
-    public function parameters(): HasMany
-    {
-        return $this->hasMany(CommandParameter::class)->whereNull('parent_id');
-    }
-
-    /**
-     * Get all parameters including nested ones
-     */
-    public function allParameters(): HasMany
-    {
-        return $this->hasMany(CommandParameter::class);
-    }
 }

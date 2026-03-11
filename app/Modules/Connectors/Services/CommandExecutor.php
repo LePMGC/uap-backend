@@ -48,10 +48,13 @@ class CommandExecutor
         try {
             // 2. Prepare Payload (Form vs Raw)
             $payload = $this->preparePayload($command, $userInput, $instance);
+            $bluePrintService = new BlueprintService();
+            $bluePrint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
 
             // 3. Execute via Provider
-            $provider = ProviderFactory::make($instance);
-            $response = $provider->send($payload);
+            $provider = ProviderFactory::make($instance->connection_settings, $bluePrint);
+            //$response = $provider->send($payload);
+            $response = $provider->execute($command->command_key, $userInput);
 
             $executionTime = round((microtime(true) - $startTime) * 1000);
 

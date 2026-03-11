@@ -7,11 +7,17 @@ use App\Modules\Connectors\Models\Command;
 use App\Modules\Connectors\Models\CommandParameter;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use App\Modules\Connectors\Services\BlueprintService;
+use App\Modules\Connectors\Providers\ProviderFactory;
 
 class CommandController extends Controller
 {
 
-/**
+    public function __construct(
+        protected BlueprintService $blueprintService
+    ) {}
+
+    /**
      * Set up middleware for the controller.
      */
     public static function middleware(): array
@@ -64,10 +70,13 @@ class CommandController extends Controller
      */
     public function show($id): JsonResponse
     {
-        // We load 'parameters.children' recursively to support nested structs
-        $command = Command::with(['parameters.children.children'])->findOrFail($id);
+        // Load parameters and nested children recursively
+        $command = Command::findOrFail($id);
 
-        return response()->json($command);
+        // Append the payload to the response object
+        $response = $command->toArray();
+
+        return response()->json($response);
     }
 
     /**
@@ -77,45 +86,58 @@ class CommandController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'category_slug' => 'required|string',
-            'name' => 'required|string',
-            'command_key' => 'required|string',
-            'payload_template' => 'required|string', // The XML/JSON/CAI body
-            'system_params' => 'nullable|array',
+            'category_slug'   => 'required|string',
+            'name'            => 'required|string',
+            'command_key'     => 'required|string',
+            'request_payload' => 'required|string',
+            'action' => 'required|string',
         ]);
 
+        // 1. Use the Factory to get the right provider
+        $provider = ProviderFactory::make([], ['category_slug' => $validated['category_slug']]);
+
+        // 2. Delegate extraction to the provider instance
+        $systemParams = $provider->extractSystemParams($validated['request_payload']);
+
+        // 3. Save the command with the auto-extracted parameters
         $command = Command::create(array_merge($validated, [
-            'is_custom' => true,
-            'created_by' => auth()->id(),
+            'system_params' => $systemParams,
+            'is_custom'     => true,
+            'created_by'    => auth()->id(),
         ]));
 
         return response()->json($command, 201);
     }
 
-    /**
-     * Update a custom command.
-     */
     public function update(Request $request, $id): JsonResponse
     {
-        $command = Command::where('created_by', auth()->id())->findOrFail($id);
+        $command = Command::findOrFail($id);
 
         $validated = $request->validate([
-            'name' => 'sometimes|string',
-            'payload_template' => 'sometimes|string',
-            'system_params' => 'sometimes|array',
+            'category_slug' => 'required|string',
+            'name' => 'required|string',
+            'command_key' => 'required|string',
+            'request_payload' => 'required|string',
+            'action' => 'required|string',
         ]);
 
+        // 1. Use the Factory to get the right provider
+        $provider = ProviderFactory::make([], ['category_slug' => $validated['category_slug']]);
+
+        // 2. Extract system params
+        $validated['system_params'] = $provider->extractSystemParams($validated['request_payload']);
+
+        // 3. Single update
         $command->update($validated);
 
         return response()->json($command);
     }
-
     /**
      * Delete a custom command.
      */
     public function destroy($id): JsonResponse
     {
-        $command = Command::where('created_by', auth()->id())->findOrFail($id);
+        $command = Command::findOrFail($id);
         $command->delete();
 
         return response()->json(['message' => 'Command deleted successfully']);

@@ -12,9 +12,15 @@ use Illuminate\Routing\Controllers\Middleware;
 use App\Modules\Connectors\Services\CommandExecutor;
 use App\Modules\Connectors\Services\PermissionEvaluator;
 use App\Modules\Connectors\Models\Command;
+use App\Modules\Connectors\Services\BlueprintService;
 
 class ProviderInstanceController extends Controller  implements HasMiddleware
 {
+     public function __construct(
+        protected BlueprintService $blueprintService
+    ) {}
+
+
     public static function middleware(): array
     {
         return [
@@ -67,7 +73,7 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
             'connection_settings.password' => 'required|string',
             'connection_settings.user_agent' => 'nullable|string|max:255', // Added User Agent
         ]);
-
+        $validated['is_active'] = false;
         $instance = ProviderInstance::create($validated);
 
         \App\Modules\Core\Auditing\Services\UapLogger::info('SystemAudit', 'PROVIDER_INSTANCE_CREATED', [
@@ -295,7 +301,7 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
         }
 
         try {
-            $blueprint = config("providers.{$category}");
+            $blueprint = $this->blueprintService->getCategoryBlueprint($category);
             if (!$blueprint) {
                 return response()->json(['message' => 'Blueprint not found'], 400);
             }

@@ -1,9 +1,9 @@
 <?php
 
 return [
-    'method' => 'UpdateOffer',
-    'action' => 'update',
-    'description' => 'Update an existing offers of a subscriber',
+    'method' => 'AddPeriodicAccountManagementData',
+    'action' => 'create',
+    'description' => 'Add periodic account management tasks for a subscriber',
     
     // System parameters required by the Ericsson AIR node for every request
     'system_params' => [
@@ -14,10 +14,9 @@ return [
         'requestedOwner'      => 1,
     ],
 
-    // This command requires no user input to function
     'request_payload' => '<?xml version="1.0"?>
 <methodCall>
-	<methodName>UpdateOffer</methodName>
+	<methodName>AddPeriodicAccountManagementData</methodName>
 	<params>
 		<param>
 			<value>
@@ -25,25 +24,25 @@ return [
 					<member>
 						<name>originNodeType</name>
 						<value>
-							<string>EXTMOMO</string>
+							<string>EXT</string>
 						</value>
 					</member>
 					<member>
 						<name>originHostName</name>
 						<value>
-							<string>LEAP7369850072</string>
+							<string>LEAP7369847919</string>
 						</value>
 					</member>
 					<member>
 						<name>originTransactionID</name>
 						<value>
-							<string>7369850072</string>
+							<string>0112717719473098096</string>
 						</value>
 					</member>
 					<member>
 						<name>originTimeStamp</name>
 						<value>
-							<dateTime.iso8601>20260224T15:35:50+0100</dateTime.iso8601>
+							<dateTime.iso8601>20260224T15:35:49+0100</dateTime.iso8601>
 						</value>
 					</member>
 					<member>
@@ -55,25 +54,38 @@ return [
 					<member>
 						<name>subscriberNumber</name>
 						<value>
-							<string>064099620</string>
+							<string>069229595</string>
 						</value>
 					</member>
 					<member>
-						<name>offerID</name>
+						<name>pamInformationList</name>
 						<value>
-							<int>37457</int>
-						</value>
-					</member>
-					<member>
-						<name>offerType</name>
-						<value>
-							<int>2</int>
-						</value>
-					</member>
-					<member>
-						<name>expiryDateTime</name>
-						<value>
-							<dateTime.iso8601>20260225T16:35:50+0100</dateTime.iso8601>
+							<array>
+								<data>
+									<value>
+										<struct>
+											<member>
+												<name>pamServiceID</name>
+												<value>
+													<int>3</int>
+												</value>
+											</member>
+											<member>
+												<name>pamClassID</name>
+												<value>
+													<int>3</int>
+												</value>
+											</member>
+											<member>
+												<name>scheduleID</name>
+												<value>
+													<int>3</int>
+												</value>
+											</member>
+										</struct>
+									</value>
+								</data>
+							</array>
 						</value>
 					</member>
 				</struct>
