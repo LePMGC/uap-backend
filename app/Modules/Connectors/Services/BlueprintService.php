@@ -62,10 +62,10 @@ class BlueprintService
     public function getCommandDetailsById(int $id): ?array
     {
         $command = Command::findOrFail($id);
-        
+
         // Merge Database record with File-based blueprint static info
         $blueprint = config("blueprints.{$command->category_slug}.commands.{$command->command_key}");
-        
+
         if (!$blueprint) {
             return null;
         }
