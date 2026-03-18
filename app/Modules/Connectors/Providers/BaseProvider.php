@@ -17,7 +17,7 @@ abstract class BaseProvider
 
     public function execute(string $commandName, array $userParams): array
     {
-        $commandDef = $this->blueprint['commands'][$commandName] 
+        $commandDef = $this->blueprint['commands'][$commandName]
             ?? throw new \Exception("Command {$commandName} not found.");
 
         try {
@@ -61,7 +61,9 @@ abstract class BaseProvider
         $port = $this->config['port'] ?? null;
 
         try {
-            if (!$host) throw new \Exception("Configuration Error: Missing Host IP");
+            if (!$host) {
+                throw new \Exception("Configuration Error: Missing Host IP");
+            }
 
             // Level 1: Ping (ICMP)
             if (!$this->ping($host)) {
@@ -96,10 +98,10 @@ abstract class BaseProvider
     protected function ping(string $host): bool
     {
         // Executes a single ping with a 1-second timeout
-        $command = PHP_OS_FAMILY === 'Windows' 
-            ? "ping -n 1 -w 1000 $host" 
+        $command = PHP_OS_FAMILY === 'Windows'
+            ? "ping -n 1 -w 1000 $host"
             : "ping -c 1 -W 1 $host";
-            
+
         exec($command, $output, $result);
         return $result === 0;
     }
@@ -151,7 +153,7 @@ abstract class BaseProvider
                 'host'  => $this->config['host'] ?? 'N/A',
                 'error' => $e->getMessage()
             ]);
-            
+
             return false;
         }
     }
@@ -159,4 +161,6 @@ abstract class BaseProvider
     abstract public function checkHealth(): bool;
 
     abstract public function extractSystemParams(string $rawPayload): array;
+
+    abstract public function parseSamplePayload(string $rawPayload): array;
 }

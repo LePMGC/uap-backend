@@ -18,8 +18,12 @@ class UcipProvider extends BaseProvider
         $this->statusRegistry = require __DIR__ . '/../Config/ucip_codes.php';
     }
 
-    protected function login(): void {} 
-    protected function logout(): void {}
+    protected function login(): void
+    {
+    }
+    protected function logout(): void
+    {
+    }
 
     /**
      * Builds the UCIP XML-RPC payload, injecting ONLY authorized system parameters.
@@ -27,13 +31,13 @@ class UcipProvider extends BaseProvider
     protected function buildPayload(array $commandDef, array $params): string
     {
         $method = $commandDef['method'];
-        
+
         // 1. Define the Available System Parameter Pool
         $pool = [
             'originNodeType'      => $this->config['origin_node_type'] ?? 'EXT',
             'originHostName'      => $this->config['host'] ?? 'UAP-Server',
             'originTransactionID' => $this->generateTransactionId(),
-            'originTimeStamp'     => now()->format('Ymd\TH:i:s+0000'),
+            'originTimeStamp'     => now()->format('Ymd\TH:i:s+0100'),
         ];
 
         // 2. Filter the pool based on what is defined in the command
@@ -52,7 +56,7 @@ class UcipProvider extends BaseProvider
         $finalParams = array_merge($authorizedSystemParams, $params);
 
         $xml = "<?xml version=\"1.0\"?>\n<methodCall>\n<methodName>{$method}</methodName>\n<params>\n<param>\n<value><struct>\n";
-        
+
         foreach ($finalParams as $key => $value) {
             $xml .= "<member><name>{$key}</name><value>";
             $xml .= $this->encodeValue($value);
@@ -121,7 +125,7 @@ class UcipProvider extends BaseProvider
     {
         try {
             $xml = new SimpleXMLElement($rawResponse);
-            
+
             // Handle Protocol-level faults (e.g., authentication or method errors)
             if (isset($xml->fault)) {
                 return $this->handleFault($xml->fault->value->struct);
@@ -133,7 +137,7 @@ class UcipProvider extends BaseProvider
 
             // Extract the responseCode; default to 0 (Success) if not present
             $responseCode = isset($data['responseCode']) ? (int)$data['responseCode'] : 0;
-            
+
             // Map the numeric code to the human-readable description from ucip_codes.php
             $description = $this->statusRegistry['responses'][$responseCode] ?? "Unknown Error ({$responseCode})";
 
@@ -141,15 +145,15 @@ class UcipProvider extends BaseProvider
             $data['response_message'] = $description;
 
             $isSuccessful = $responseCode === 0 || $responseCode === 1 || $responseCode === 2;
-            
+
             //log user parameters and response code for telecom auditing purposes
             \Log::info("userParams: " . json_encode($commandDef['params'] ?? []));
 
             // TELECOM LOGGING: Log the specific provider code and its meaning
             \App\Modules\Core\Auditing\Services\UapLogger::log(
-                'EricssonUCIP', 
-                'PROVIDER_RESPONSE', 
-                $isSuccessful ? 'info' : 'error', 
+                'EricssonUCIP',
+                'PROVIDER_RESPONSE',
+                $isSuccessful ? 'info' : 'error',
                 [
                     'code'    => $responseCode,
                     'message' => $description,
@@ -163,7 +167,7 @@ class UcipProvider extends BaseProvider
                 'success' => $isSuccessful,
                 'code'    => $responseCode,
                 'message' => $description,
-                'data'    => $data, 
+                'data'    => $data,
                 'raw'     => $rawResponse
             ];
         } catch (\Exception $e) {
@@ -185,7 +189,9 @@ class UcipProvider extends BaseProvider
     {
         // Get the first child node (e.g., <string>, <i4>, <array>, <struct>)
         $child = $value->children()[0] ?? null;
-        if (!$child) return (string)$value;
+        if (!$child) {
+            return (string)$value;
+        }
 
         $type = $child->getName();
 
@@ -211,7 +217,7 @@ class UcipProvider extends BaseProvider
     {
         $faultData = $this->flattenXmlStruct($faultXml->value->struct);
         $code = (int)($faultData['faultCode'] ?? 999);
-        
+
         return [
             'success' => false,
             'code'    => $code,
@@ -230,7 +236,7 @@ class UcipProvider extends BaseProvider
     {
         // Use the recursive parser we built to get the faultCode and faultString
         $faultData = $this->parseXmlStruct($faultStruct);
-        
+
         $code = (int)($faultData['faultCode'] ?? 999);
         $faultString = $faultData['faultString'] ?? 'Unknown Protocol Error';
 
@@ -252,7 +258,7 @@ class UcipProvider extends BaseProvider
         foreach ($members as $member) {
             $name = (string)$member->name;
             $valNode = $member->value->children();
-            
+
             // Basic handling: if child is a struct/array, we might need recursion later
             // For now, we flatten the immediate value
             $result[$name] = (string)$valNode[0];
@@ -264,7 +270,7 @@ class UcipProvider extends BaseProvider
     public function checkHealth(): bool
     {
         // We use a dummy command or a basic XML-RPC call
-        // If we get a responseCode (even an error like 'Subscriber Not Found'), 
+        // If we get a responseCode (even an error like 'Subscriber Not Found'),
         // it means the SERVER is alive.
         try {
             $response = $this->send($this->buildHeartbeatPayload());
@@ -280,11 +286,11 @@ class UcipProvider extends BaseProvider
     }
 
 
-   
+
     public function extractSystemParams(string $rawPayload): array
     {
         $detected = [];
-        
+
         // The specific keys to look for in UCIP XML
         $map = [
             'originNodeType'      => 'EXT',
@@ -296,7 +302,7 @@ class UcipProvider extends BaseProvider
         foreach ($map as $key => $placeholder) {
             // Regex to find content inside <name>key</name><value><type>value</type></value>
             $pattern = "/<name>{$key}<\/name>\s*<value>\s*<[^>]+>([^<]+)<\/[^>]+>\s*<\/value>/i";
-            
+
             // If the key exists in the raw payload, we assign it the defined platform value
             if (preg_match($pattern, $rawPayload)) {
                 $detected[$key] = $placeholder;
@@ -304,5 +310,90 @@ class UcipProvider extends BaseProvider
         }
 
         return $detected;
+    }
+
+    /**
+     * Parses a UCIP XML-RPC sample payload.
+     * Returns the method name, structured user params, and identified system placeholders.
+     */
+    public function parseSamplePayload(string $rawPayload): array
+    {
+        try {
+            // 1. Clean payload
+            if (strpos($rawPayload, '<?xml') !== 0) {
+                $xmlStart = strpos($rawPayload, '<?xml');
+                if ($xmlStart === false) {
+                    throw new \Exception("Invalid XML payload provided.");
+                }
+                $rawPayload = substr($rawPayload, $xmlStart);
+            }
+
+            $xml = new \SimpleXMLElement($rawPayload);
+
+            // 2. Method name
+            $methodName = (string)$xml->methodName;
+
+            // 3. Locate struct
+            $struct = $xml->params->param->value->struct;
+            if (!$struct) {
+                return [
+                    'method' => $methodName,
+                    'params' => [],
+                    'system_params' => [],
+                    'raw_payload' => $rawPayload
+                ];
+            }
+
+            // 4. Parse all params
+            $allParams = $this->parseXmlStruct($struct);
+
+            // 5. Generate system values
+            $systemMap = [
+                'originNodeType'      => 'EXT',
+                'originHostName'      => $this->config['host'] ?? 'UAP-Server',
+                'originTransactionID' => $this->generateTransactionId(),
+                'originTimeStamp'     => now()->format('Ymd\TH:i:s+0100'),
+                'originOperatorID'    => 'UAP_ADMIN',
+            ];
+
+            $detectedSystemParams = [];
+            $userParams = [];
+
+            // 6. Inject into XML
+            foreach ($struct->member as $member) {
+                $name = (string)$member->name;
+
+                if (array_key_exists($name, $systemMap)) {
+                    $newValue = $systemMap[$name];
+
+                    // Detect value type and update accordingly
+                    if (isset($member->value->string)) {
+                        $member->value->string = $newValue;
+                    } elseif (isset($member->value->{'dateTime.iso8601'})) {
+                        $member->value->{'dateTime.iso8601'} = $newValue;
+                    } else {
+                        // fallback (in case type changes)
+                        $member->value = $newValue;
+                    }
+
+                    $detectedSystemParams[$name] = $newValue;
+                } else {
+                    $userParams[$name] = (string)$member->value->string ?? '';
+                }
+            }
+
+            // 7. Convert updated XML back to string
+            $updatedRawPayload = $xml->asXML();
+
+            return [
+                'method'        => $methodName,
+                'params'        => $userParams,
+                'system_params' => $detectedSystemParams,
+                'raw_payload'   => $updatedRawPayload
+            ];
+
+        } catch (\Exception $e) {
+            throw new \Exception("Failed to parse UCIP sample: " . $e->getMessage());
+        }
     }
 }

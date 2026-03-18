@@ -24,14 +24,16 @@ Route::post('/login', [AuthController::class, 'login'])->name('login');
 
 // Authenticated Routes
 Route::middleware('auth:api')->group(function () {
-    
+
     /**
      * AUTH & PROFILE
      * These routes are accessible even if must_change_password is true
      * so the user can complete the mandatory password update.
      */
     Route::prefix('auth')->group(function () {
-        Route::get('/me', function () { return response()->json(auth()->user()); });
+        Route::get('/me', function () {
+            return response()->json(auth()->user());
+        });
         Route::post('/refresh', [AuthController::class, 'refresh']);
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::post('/change-password', [AuthController::class, 'changePassword']);
@@ -45,7 +47,7 @@ Route::middleware('auth:api')->group(function () {
 
         // Management (RBAC & User Administration)
         Route::prefix('management')->group(function () {
-            
+
             // Roles & Permissions
             Route::get('/roles', [RoleAndPermissionController::class, 'index']);
             Route::post('/roles', [RoleAndPermissionController::class, 'store']);
@@ -83,7 +85,8 @@ Route::middleware('auth:api')->group(function () {
 
             Route::prefix('commands')->group(function () {
                 Route::get('/', [CommandController::class, 'index']);
-                Route::get('/{id}', [CommandController::class, 'show']); 
+                Route::get('/tree', [ProviderCategoryController::class, 'tree']);
+                Route::get('/{id}', [CommandController::class, 'show']);
                 Route::post('/', [CommandController::class, 'store']);
                 Route::put('/{id}', [CommandController::class, 'update']);
                 Route::delete('/{id}', [CommandController::class, 'destroy']);
@@ -123,11 +126,11 @@ Route::middleware('auth:api')->group(function () {
                 Route::get('/', [BatchJobController::class, 'indexTemplates']);
                 Route::post('/', [BatchJobController::class, 'storeTemplate']);
                 Route::post('/preview-mapping', [BatchJobController::class, 'previewMapping']);
-                
+
                 Route::prefix('{id}')->group(function () {
                     Route::post('/run', [BatchJobController::class, 'runJob']);
                     Route::delete('/', [BatchJobController::class, 'destroyTemplate']);
-                    Route::post('/toggle', [BatchJobController::class, 'toggleSchedule']); 
+                    Route::post('/toggle', [BatchJobController::class, 'toggleSchedule']);
                     Route::post('/terminate', [BatchJobController::class, 'terminateSchedule']);
                 });
             });
@@ -150,7 +153,7 @@ Route::middleware('auth:api')->group(function () {
 
 
         Route::group(['prefix' => 'audit-logs'], function () {
-            Route::get('/', [AuditLogController::class, 'index']); 
+            Route::get('/', [AuditLogController::class, 'index']);
             Route::get('/trace/{traceId}', [AuditLogController::class, 'showTrace']);
             Route::get('/stats/connectivity', [AuditLogController::class, 'connectivityStats']);
             Route::get('/security', [AuditLogController::class, 'securityLogs']);

@@ -20,7 +20,7 @@ class CaiProvider extends BaseProvider
     protected function login(): void
     {
         $this->connection = fsockopen($this->config['host'], $this->config['port'], $errno, $errstr, 10);
-        
+
         if (!$this->connection) {
             throw new Exception("CAI Connection failed: $errstr ($errno)");
         }
@@ -39,12 +39,14 @@ class CaiProvider extends BaseProvider
     protected function send(string $payload): string
     {
         fwrite($this->connection, $payload . "\n");
-        
+
         $buffer = "";
         // MML responses usually end with a semicolon
         while (!str_contains($buffer, ';')) {
             $chunk = fgets($this->connection, 4096);
-            if ($chunk === false) break;
+            if ($chunk === false) {
+                break;
+            }
             $buffer .= $chunk;
         }
         return trim($buffer);
@@ -65,12 +67,12 @@ class CaiProvider extends BaseProvider
     {
         // prefix is usually the command keyword (e.g., SET, GET)
         $parts = [$commandDef['prefix']];
-        
+
         foreach ($params as $key => $val) {
             // CAI usually expects parameters as KEY,VALUE
             $parts[] = "{$key},{$val}";
         }
-        
+
         return implode(':', $parts) . ';';
     }
 
@@ -85,9 +87,9 @@ class CaiProvider extends BaseProvider
 
         // TELECOM LOGGING
         \App\Modules\Core\Auditing\Services\UapLogger::log(
-            'EricssonCAI', 
-            'PROVIDER_RESPONSE', 
-            $isSuccessful ? 'info' : 'error', 
+            'EricssonCAI',
+            'PROVIDER_RESPONSE',
+            $isSuccessful ? 'info' : 'error',
             [
                 'code' => $code,
                 'message' => $message,
@@ -122,7 +124,7 @@ class CaiProvider extends BaseProvider
     {
         $data = [];
         $parts = explode(':', $raw);
-        
+
         foreach ($parts as $part) {
             if (str_contains($part, ',')) {
                 $keyValue = explode(',', $part);
@@ -161,5 +163,22 @@ class CaiProvider extends BaseProvider
         }
 
         return $detected;
+    }
+
+    public function parseSamplePayload(string $rawPayload): array
+    {
+        // Example: "SET:MSISDN,24206...:KEY,VAL;"
+        $parts = explode(':', rtrim($rawPayload, ';'));
+        $method = array_shift($parts);
+        $params = [];
+
+        foreach ($parts as $pair) {
+            $kv = explode(',', $pair);
+            if (count($kv) === 2) {
+                $params[$kv[0]] = $kv[1];
+            }
+        }
+
+        return ['method' => $method, 'params' => $params];
     }
 }

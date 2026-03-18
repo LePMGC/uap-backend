@@ -23,7 +23,7 @@ class BlueprintService
                 'request_format' => $config['request_format'] ?? 'xml',
                 'response_format' => $config['response_format'] ?? 'xml',
                 'command_actions' => $config['command_actions'] ?? [],
-                'command_count'   => isset($config['commands']) ? count($config['commands']) : 0,
+                'command_count'   => Command::where(['category_slug' => $key])->count()
             ];
         }, $blueprints, array_keys($blueprints));
     }
@@ -33,27 +33,19 @@ class BlueprintService
      */
     public function getCommandsByCategory(string $categorySlug): array
     {
-        $category = config("blueprints.{$categorySlug}");
+        // Fetch all commands from DB
+        $commands = Command::where('category_slug', $categorySlug)->get();
 
-        if (!is_array($category) || !isset($category['commands'])) {
-            return [];
-        }
-
-        // Fetch IDs from database to match the file-based blueprints
-        $dbCommands = Command::where('category_slug', $categorySlug)
-            ->pluck('id', 'command_key') // Assuming 'command_key' matches the filename/slug
-            ->toArray();
-
-        return array_map(function ($command, $name) use ($dbCommands) {
+        return $commands->map(function ($command) {
             return [
-                'id'          => $dbCommands[$name] ?? null, // The critical Database ID
-                'slug'        => $name,
-                'name'        => $command['name'] ?? ucfirst(str_replace('_', ' ', $name)),
-                'method'      => $command['method'] ?? $name,
-                'description' => $command['description'] ?? '',
-                'action'      => $command['action'] ?? 'view',
+                'id'          => $command->id,
+                'category_slug'        => $command->category_slug,
+                'name'        => $command->name ?? ucfirst(str_replace('_', ' ', $command->command_key)),
+                'command_key'      => $command->command_key,
+                'description' => $command->description ?? '',
+                'action'      => $command->action ?? 'view',
             ];
-        }, $category['commands'], array_keys($category['commands']));
+        })->toArray();
     }
 
     /**
@@ -124,5 +116,38 @@ class BlueprintService
     public function getCategoryBlueprint(string $slug): ?array
     {
         return config("blueprints.{$slug}");
+    }
+
+
+    public function getCommandTree(): array
+    {
+        $blueprints = config('blueprints');
+
+        if (!is_array($blueprints)) {
+            return [];
+        }
+
+        $tree = [];
+
+        foreach ($blueprints as $slug => $config) {
+            // Fetch commands for this specific category using your existing logic
+            $commands = $this->getCommandsByCategory($slug);
+
+            $tree[] = [
+                'slug'     => $slug,
+                'name'     => $config['name'] ?? ucfirst(str_replace('-', ' ', $slug)), // Fallback name
+                'commands' => array_map(function ($cmd) {
+                    return [
+                        'id'   => $cmd['id'],
+                        'name' => $cmd['name'],
+                        'category_slug' => $cmd['category_slug'],
+                        'action' => $cmd['action'] ?? 'run',
+                        'command_key' => $cmd['command_key']
+                    ];
+                }, $commands)
+            ];
+        }
+
+        return $tree;
     }
 }

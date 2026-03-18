@@ -12,10 +12,10 @@ use App\Modules\Connectors\Providers\ProviderFactory;
 
 class CommandController extends Controller
 {
-
     public function __construct(
         protected BlueprintService $blueprintService
-    ) {}
+    ) {
+    }
 
     /**
      * Set up middleware for the controller.
@@ -25,7 +25,7 @@ class CommandController extends Controller
         return [
             // Any authenticated user with 'view_commands' can see the list and blueprints
             new \Illuminate\Routing\Controllers\Middleware('permission:view_commands', only: ['index', 'show']),
-            
+
             // Only technical leads/admins can manage the underlying blueprints
             new \Illuminate\Routing\Controllers\Middleware('permission:manage_commands', only: ['store', 'update', 'destroy']),
         ];
@@ -70,11 +70,24 @@ class CommandController extends Controller
      */
     public function show($id): JsonResponse
     {
-        // Load parameters and nested children recursively
         $command = Command::findOrFail($id);
+        $provider = ProviderFactory::make([], ['category_slug' => $command->category_slug]);
 
-        // Append the payload to the response object
+        $parsed = $provider->parseSamplePayload($command->request_payload);
+
+        // Merge system and user params for the form
+        $combinedParams = array_merge($parsed['system_params'], $parsed['params']);
+
         $response = $command->toArray();
+
+        // OVERWRITE: Use the injected raw XML so FE 'Raw Mode' matches 'Form Mode'
+        $response['parameters'] = $combinedParams;
+        $response['request_payload'] = $parsed['raw_payload'];
+
+        $response['meta'] = [
+            'method' => $parsed['method'],
+            'system_keys' => array_keys($parsed['system_params'])
+        ];
 
         return response()->json($response);
     }

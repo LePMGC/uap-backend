@@ -12,7 +12,8 @@ class ProviderCategoryController extends Controller implements HasMiddleware
 {
     public function __construct(
         protected BlueprintService $blueprintService
-    ) {}
+    ) {
+    }
 
     public static function middleware(): array
     {
@@ -39,7 +40,7 @@ class ProviderCategoryController extends Controller implements HasMiddleware
     public function blueprints(string $slug): JsonResponse
     {
         $commands = $this->blueprintService->getCommandsByCategory($slug);
-        
+
         if (empty($commands)) {
             return response()->json(['message' => 'Category not found or empty'], 404);
         }
@@ -59,5 +60,11 @@ class ProviderCategoryController extends Controller implements HasMiddleware
         }
 
         return response()->json($details);
+    }
+
+    public function tree(): JsonResponse
+    {
+        $tree = $this->blueprintService->getCommandTree();
+        return response()->json($tree);
     }
 }
