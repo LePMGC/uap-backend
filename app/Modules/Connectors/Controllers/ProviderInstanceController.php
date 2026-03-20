@@ -14,11 +14,12 @@ use App\Modules\Connectors\Services\PermissionEvaluator;
 use App\Modules\Connectors\Models\Command;
 use App\Modules\Connectors\Services\BlueprintService;
 
-class ProviderInstanceController extends Controller  implements HasMiddleware
+class ProviderInstanceController extends Controller implements HasMiddleware
 {
-     public function __construct(
+    public function __construct(
         protected BlueprintService $blueprintService
-    ) {}
+    ) {
+    }
 
 
     public static function middleware(): array
@@ -166,20 +167,20 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
 
         try {
             $blueprint = config("providers.{$instance->category_slug}");
-            
+
             if (!$blueprint) {
                 return response()->json(['message' => 'Blueprint configuration not found for this category'], 500);
             }
 
             $provider = ProviderFactory::make($instance->connection_settings, $blueprint);
-            
+
             // 1. Execute heartbeat (this updates the DB internally)
             $provider->heartbeat($instance->id);
             $instance->refresh();
 
             // 2. Log the RESULT of the ping
             $logMethod = $instance->is_active ? 'info' : 'error';
-            
+
             \App\Modules\Core\Auditing\Services\UapLogger::$logMethod('NetworkAudit', 'MANUAL_CONNECTIVITY_TEST', [
                 'provider_name' => $instance->name,
                 'category'      => $instance->category_slug,
@@ -246,7 +247,7 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
         // 1. Load the blueprints config
         $blueprints = config('blueprints');
 
-        // If the config isn't registered in the standard Laravel config directory, 
+        // If the config isn't registered in the standard Laravel config directory,
         // you may need to load it manually:
         if (!$blueprints) {
             $blueprints = require app_path('Modules/Connectors/Config/blueprints.php');
@@ -307,8 +308,8 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
             }
 
             $provider = ProviderFactory::make($settings, $blueprint);
-            $isReachable = $provider->checkConnectivity(); 
-            
+            $isReachable = $provider->checkConnectivity();
+
             \App\Modules\Core\Auditing\Services\UapLogger::info('NetworkAudit', 'PRE_SAVE_CONNECTIVITY_TEST', [
                 'category' => $category,
                 'host'     => $settings['host'],
@@ -333,5 +334,24 @@ class ProviderInstanceController extends Controller  implements HasMiddleware
                 'message' => 'Connection test failed: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+
+
+    public function getAllByCategory($categorySlug): JsonResponse
+    {
+        $query = ProviderInstance::query()
+            ->select('id', 'name', 'is_active');
+
+        // Filter by category (important for your use case)
+        if (!empty($categorySlug)) {
+            $query->where('category_slug', $categorySlug);
+        }
+
+        $instances = $query
+            ->orderBy('name')
+            ->get();
+
+        return response()->json($instances);
     }
 }

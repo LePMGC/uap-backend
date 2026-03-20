@@ -73,7 +73,7 @@ class CommandController extends Controller
         $command = Command::findOrFail($id);
         $provider = ProviderFactory::make([], ['category_slug' => $command->category_slug]);
 
-        $parsed = $provider->parseSamplePayload($command->request_payload);
+        $parsed = $provider->parseSamplePayload($command->request_payload ?? "");
 
         // Merge system and user params for the form
         $combinedParams = array_merge($parsed['system_params'], $parsed['params']);

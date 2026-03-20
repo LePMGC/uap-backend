@@ -80,6 +80,7 @@ Route::middleware('auth:api')->group(function () {
                 Route::post('/{id}/ping', [ProviderInstanceController::class, 'manualPing']);
                 Route::get('/{id}/commands', [ProviderInstanceController::class, 'getCommands']);
                 Route::post('/test-connection', [ProviderInstanceController::class, 'testConnection']);
+                Route::get('/category/{categorySlug}', [ProviderInstanceController::class, 'getAllByCategory']);
             });
 
 

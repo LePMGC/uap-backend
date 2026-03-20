@@ -21,7 +21,7 @@ class CommandLogController extends Controller implements HasMiddleware
         $this->executor = $executor;
     }
 
-    
+
     public static function middleware(): array
     {
         return [
@@ -31,13 +31,13 @@ class CommandLogController extends Controller implements HasMiddleware
         ];
     }
 
-/**
-     * List command logs with intelligent permission filtering and UI metadata.
-     */
+    /**
+         * List command logs with intelligent permission filtering and UI metadata.
+         */
     public function index(Request $request): AnonymousResourceCollection|JsonResponse
     {
         $user = auth()->user();
-        
+
         // Eager load 'command' to show the friendly name in the log table
         $query = CommandLog::with(['user:id,username', 'instance:id,name', 'command:id,name']);
 
@@ -75,7 +75,7 @@ class CommandLogController extends Controller implements HasMiddleware
         // 3. Search by MSISDN (Searching within JSON request_payload)
         if ($request->has('search')) {
             $searchTerm = $request->search;
-            $query->where(function($q) use ($searchTerm) {
+            $query->where(function ($q) use ($searchTerm) {
                 $q->where('request_payload', 'LIKE', "%{$searchTerm}%")
                   ->orWhere('command_name', 'LIKE', "%{$searchTerm}%");
             });
@@ -92,7 +92,7 @@ class CommandLogController extends Controller implements HasMiddleware
     public function show(string $id): CommandLogResource|JsonResponse
     {
         $log = CommandLog::with(['user', 'instance'])->findOrFail($id);
-        
+
         // Security check
         if (!auth()->user()->can('view_all_command_logs') && $log->user_id !== auth()->id()) {
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -109,14 +109,14 @@ class CommandLogController extends Controller implements HasMiddleware
         $validated = $request->validate([
             'instance_id' => 'required|integer|exists:provider_instances,id',
             'command_id'  => 'required|integer|exists:commands,id',
-            'params'      => 'required', 
+            'payload'      => 'required',
         ]);
 
         try {
             $logEntry = $this->executor->execute(
                 $validated['instance_id'],
                 $validated['command_id'],
-                $validated['params'],
+                $validated['payload'],
                 auth()->id(),
                 null,
                 $request->header('X-Request-ID')

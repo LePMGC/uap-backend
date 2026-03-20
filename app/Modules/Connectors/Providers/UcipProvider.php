@@ -312,6 +312,37 @@ class UcipProvider extends BaseProvider
         return $detected;
     }
 
+    private function extractXmlValue(\SimpleXMLElement $valueNode)
+    {
+        // No child → raw value
+        if (!$valueNode->children()->count()) {
+            return (string)$valueNode;
+        }
+
+        $child = $valueNode->children()[0];
+        $type = $child->getName();
+        $value = (string)$child;
+
+        switch ($type) {
+            case 'int':
+            case 'i4':
+                return (int)$value;
+
+            case 'boolean':
+                return $value === '1';
+
+            case 'double':
+                return (float)$value;
+
+            case 'dateTime.iso8601':
+                return $value; // keep as string (or convert later if needed)
+
+            case 'string':
+            default:
+                return $value;
+        }
+    }
+
     /**
      * Parses a UCIP XML-RPC sample payload.
      * Returns the method name, structured user params, and identified system placeholders.
@@ -319,7 +350,15 @@ class UcipProvider extends BaseProvider
     public function parseSamplePayload(string $rawPayload): array
     {
         try {
-            // 1. Clean payload
+            if (empty($rawPayload)) {
+                return [
+                    'method'        => "",
+                    'params'        => [],
+                    'system_params' => [],
+                    'raw_payload'   => ""
+                ];
+            }
+            // 1. Clean the payload (strip HTTP headers if present)
             if (strpos($rawPayload, '<?xml') !== 0) {
                 $xmlStart = strpos($rawPayload, '<?xml');
                 if ($xmlStart === false) {
@@ -330,24 +369,21 @@ class UcipProvider extends BaseProvider
 
             $xml = new \SimpleXMLElement($rawPayload);
 
-            // 2. Method name
+            // 2. Detect method name
             $methodName = (string)$xml->methodName;
 
             // 3. Locate struct
             $struct = $xml->params->param->value->struct;
             if (!$struct) {
                 return [
-                    'method' => $methodName,
-                    'params' => [],
+                    'method'        => $methodName,
+                    'params'        => [],
                     'system_params' => [],
-                    'raw_payload' => $rawPayload
+                    'raw_payload'   => $rawPayload
                 ];
             }
 
-            // 4. Parse all params
-            $allParams = $this->parseXmlStruct($struct);
-
-            // 5. Generate system values
+            // 4. Generate system values
             $systemMap = [
                 'originNodeType'      => 'EXT',
                 'originHostName'      => $this->config['host'] ?? 'UAP-Server',
@@ -359,30 +395,31 @@ class UcipProvider extends BaseProvider
             $detectedSystemParams = [];
             $userParams = [];
 
-            // 6. Inject into XML
+            // 5. Iterate over members
             foreach ($struct->member as $member) {
                 $name = (string)$member->name;
+
+                // Extract current value (typed)
+                $value = $this->extractXmlValue($member->value);
 
                 if (array_key_exists($name, $systemMap)) {
                     $newValue = $systemMap[$name];
 
-                    // Detect value type and update accordingly
-                    if (isset($member->value->string)) {
-                        $member->value->string = $newValue;
-                    } elseif (isset($member->value->{'dateTime.iso8601'})) {
-                        $member->value->{'dateTime.iso8601'} = $newValue;
+                    // Inject new value into XML (type-agnostic)
+                    if ($member->value->children()->count()) {
+                        $child = $member->value->children()[0];
+                        $child[0] = $newValue;
                     } else {
-                        // fallback (in case type changes)
                         $member->value = $newValue;
                     }
 
                     $detectedSystemParams[$name] = $newValue;
                 } else {
-                    $userParams[$name] = (string)$member->value->string ?? '';
+                    $userParams[$name] = $value;
                 }
             }
 
-            // 7. Convert updated XML back to string
+            // 6. Convert updated XML back to string
             $updatedRawPayload = $xml->asXML();
 
             return [
