@@ -109,7 +109,8 @@ class CommandLogController extends Controller implements HasMiddleware
         $validated = $request->validate([
             'instance_id' => 'required|integer|exists:provider_instances,id',
             'command_id'  => 'required|integer|exists:commands,id',
-            'payload'      => 'required',
+            'payload'     => 'required',
+            'mode'        => 'sometimes|string|in:form,raw',
         ]);
 
         try {
@@ -119,7 +120,8 @@ class CommandLogController extends Controller implements HasMiddleware
                 $validated['payload'],
                 auth()->id(),
                 null,
-                $request->header('X-Request-ID')
+                $request->header('X-Request-ID'),
+                $request->get('mode', 'form')
             );
 
             return new CommandLogResource($logEntry);

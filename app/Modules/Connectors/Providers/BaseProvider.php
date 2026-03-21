@@ -29,13 +29,72 @@ abstract class BaseProvider
             $payload = $this->buildPayload($commandDef, $userParams);
             $rawResponse = $this->send($payload);
 
-            return $this->parseResponse($commandDef, $rawResponse, $userParams);
+            return [
+                'request_raw' => $payload, // Capture the string sent
+                'response' => $this->parseResponse($commandDef, $rawResponse, $userParams)
+            ];
         } finally {
             // Optional: Close session after single command if necessary
             if ($this->isStateful && $this->authenticated) {
                 $this->logout();
             }
         }
+    }
+
+    /**
+     * Handles execution when the user provides the full raw string.
+     */
+    public function executeRaw(string $commandName, string $rawPayload): array
+    {
+        $commandDef = $this->blueprint['commands'][$commandName]
+            ?? throw new \Exception("Command {$commandName} not found.");
+
+        try {
+            if ($this->isStateful && !$this->authenticated) {
+                $this->login();
+            }
+
+            $rawResponse = $this->send($rawPayload);
+
+            return [
+                'request_raw' => $rawPayload, // The injected raw string
+                'response' => $this->parseResponse($commandDef, $rawResponse, [])
+            ];
+        } finally {
+            if ($this->isStateful && $this->authenticated) {
+                $this->logout();
+            }
+        }
+    }
+
+    /**
+     * Replaces placeholders in raw text with live instance/system values.
+     */
+    public function injectSystemParams(string $rawPayload): string
+    {
+        $systemParams = [
+            '{host_name}'          => $this->config['host'] ?? '',
+            '{auto_gen_id}'        => $this->generateTransactionId(), // Now safe to call
+            '{auto_gen_iso8601}'   => now()->format('Ymd\TH:i:sO'),
+            '{origin_node_type}'   => $this->config['origin_node_type'] ?? 'EXT',
+        ];
+
+        foreach ($systemParams as $placeholder => $value) {
+            // If generateTransactionId returns null, we don't want to replace the string with nothing
+            // unless the user specifically put the placeholder there.
+            $rawPayload = str_replace($placeholder, (string)($value ?? $placeholder), $rawPayload);
+        }
+
+        return $rawPayload;
+    }
+
+    /**
+     * Default implementation returns null.
+     * Child classes (like UCIP) should override this.
+     */
+    protected function generateTransactionId(): ?string
+    {
+        return null;
     }
 
     abstract protected function login(): void;

@@ -36,13 +36,14 @@ class CommandLogResource extends JsonResource
                 'response_code' => $this->response_code,
             ],
 
-            // Payloads: raw and processed
             'payloads' => [
-                'request' => $this->request_payload,
+                'request' => [
+                    'data' => $this->request_payload['data'] ?? [],
+                    'raw'  => $this->request_payload['raw'] ?? '',
+                ],
                 'response' => $this->response_payload,
             ],
 
-            // Metadata for UI display
             'metadata' => [
                 'format' => $format,
                 'execution_time' => number_format($this->execution_time_ms, 2) . 'ms',

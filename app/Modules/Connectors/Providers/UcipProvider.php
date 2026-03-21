@@ -69,10 +69,9 @@ class UcipProvider extends BaseProvider
     /**
      * Helper to generate a unique transaction ID for UCIP
      */
-    private function generateTransactionId(): string
+    protected function generateTransactionId(): string
     {
-        // UCIP often expects a numeric or alphanumeric string
-        return (string)mt_rand(100000000, 999999999);
+        return substr(str_shuffle("0123456789"), 0, 6);
     }
 
     /**

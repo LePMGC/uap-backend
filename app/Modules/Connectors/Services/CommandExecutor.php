@@ -14,20 +14,17 @@ class CommandExecutor
      * Execute a command using its Database ID.
      */
     public function execute(
-        int $instanceId, 
-        int $commandId,     // Changed from string $commandName
-        array|string $userInput, 
-        int $userId, 
+        int $instanceId,
+        int $commandId,
+        array|string $userInput, // This is the 'payload' from request
+        int $userId,
         ?string $jobInstanceId = null,
-        ?string $traceId = null
+        ?string $traceId = null,
+        string $mode = 'form' // Add mode parameter
     ): CommandLog {
-         
         $instance = ProviderInstance::findOrFail($instanceId);
-        
-        // 1. Fetch the Blueprint by ID
         $command = Command::findOrFail($commandId);
 
-        // Security Check: Ensure the command category matches the instance category
         if ($command->category_slug !== $instance->category_slug) {
             throw new Exception("Command ID [{$commandId}] does not belong to category [{$instance->category_slug}].");
         }
@@ -35,8 +32,7 @@ class CommandExecutor
         $log = CommandLog::create([
             'user_id' => $userId,
             'provider_instance_id' => $instanceId,
-            'job_instance_id' => $jobInstanceId, 
-            'command_id'           => $command->id,
+            'command_id' => $command->id,
             'command_name' => $command->command_key,
             'category_slug' => $instance->category_slug,
             'started_at' => now(),
@@ -46,36 +42,59 @@ class CommandExecutor
         $startTime = microtime(true);
 
         try {
-            // 2. Prepare Payload (Form vs Raw)
-            $payload = $this->preparePayload($command, $userInput, $instance);
             $bluePrintService = new BlueprintService();
             $bluePrint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
-
-            // 3. Execute via Provider
             $provider = ProviderFactory::make($instance->connection_settings, $bluePrint);
-            //$response = $provider->send($payload);
-            $response = $provider->execute($command->command_key, $userInput);
+
+            if ($mode === 'raw' && is_string($userInput)) {
+                $injectedRaw = $provider->injectSystemParams($userInput);
+                $result = $provider->executeRaw($command->command_key, $injectedRaw);
+
+                $requestData = ['mode' => 'raw']; // No structured data in raw mode
+                $requestRaw = $result['request_raw'];
+                $response = $result['response'];
+            } else {
+                $payloadData = $this->preparePayload($command, $userInput, $instance);
+                $result = $provider->execute($command->command_key, is_array($userInput) ? $userInput : []);
+
+                $requestData = $payloadData;
+                $requestRaw = $result['request_raw'];
+                $response = $result['response'];
+            }
 
             $executionTime = round((microtime(true) - $startTime) * 1000);
 
-            // 4. Update Log with results
             $log->update([
-                'request_payload' => is_array($payload) ? $payload : ['raw' => $payload],
+                'request_payload' => [
+                    'data' => $requestData,
+                    'raw'  => $requestRaw,
+                ],
                 'response_payload' => $response,
-                'is_successful' => $response['success'] ?? false,
+                'is_successful'    => $response['success'] ?? false,
                 'execution_time_ms' => $executionTime,
-                'ended_at' => now(),
+                'ended_at'         => now(),
             ]);
 
             return $log;
 
-        } catch (Exception $e) {
+        } catch (\Exception $e) {
             $log->update([
-                'raw_response' => $e->getMessage(), 
                 'is_successful' => false,
-                'ended_at' => now()
+                'request_payload' => [
+                    'data' => is_array($userInput) ? $userInput : ['mode' => 'raw'],
+                    'raw'  => is_string($userInput) ? $userInput : null,
+                ],
+                'response_payload' => [
+                    'success' => false,
+                    'code' => 503,
+                    'message' => "Execution Error",
+                    'data' => [$e->getMessage()],
+                    'raw' => "SYSTEM_ERROR: " . $e->getMessage()
+                ],
+                'status' => 'failed',
+                'ended_at' => now(),
             ]);
-            throw $e;
+            return $log;
         }
     }
 
