@@ -14,6 +14,8 @@ class CommandLogResource extends JsonResource
 
         $format = config("blueprints.{$category}.response_format", 'xml');
 
+        \Log::info("command ID : ".$this->id.", User ID : ".$this->user->id.", User name : ".$this->user->name);
+
         return [
             'id' => $this->id,
 

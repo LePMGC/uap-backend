@@ -62,9 +62,10 @@ class ProviderCategoryController extends Controller implements HasMiddleware
         return response()->json($details);
     }
 
-    public function tree(): JsonResponse
+    public function tree(\Illuminate\Http\Request $request): \Illuminate\Http\JsonResponse
     {
-        $tree = $this->blueprintService->getCommandTree();
+        $search = $request->query('search');
+        $tree = $this->blueprintService->getCommandTree($search);
         return response()->json($tree);
     }
 }

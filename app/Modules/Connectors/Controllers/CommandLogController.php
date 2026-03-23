@@ -38,8 +38,12 @@ class CommandLogController extends Controller implements HasMiddleware
     {
         $user = auth()->user();
 
-        // Eager load 'command' to show the friendly name in the log table
-        $query = CommandLog::with(['user:id,username', 'instance:id,name', 'command:id,name']);
+        // Base query with eager loading
+        $query = CommandLog::with([
+            'user:id,name',
+            'instance:id,name',
+            'command:id,name'
+        ]);
 
         // 1. Authorization Logic
         if (!$user->can('view_all_command_logs')) {
@@ -50,38 +54,48 @@ class CommandLogController extends Controller implements HasMiddleware
             }
         }
 
-        // 2. New Filters
-        if ($request->has('command_id')) {
+        // 2. Filters (ONLY applied if values are NOT empty)
+
+        if ($request->filled('command_id')) {
             $query->where('command_id', $request->command_id);
         }
 
-        if ($request->has('instance_id')) {
+        if ($request->filled('instance_id')) {
             $query->where('provider_instance_id', $request->instance_id);
         }
 
-        if ($request->has('category')) {
+        if ($request->filled('category')) {
             $query->where('category_slug', $request->category);
         }
 
-        if ($request->has('status')) {
-            $isSuccessful = $request->status === 'success';
-            $query->where('is_successful', $isSuccessful);
+        // ✅ FIXED STATUS FILTER
+        if ($request->filled('status')) {
+            if ($request->status === 'success') {
+                $query->where('is_successful', true);
+            } elseif ($request->status === 'failed') {
+                $query->where('is_successful', false);
+            }
+            // Ignore invalid values silently
         }
 
-        if ($request->has('date')) {
+        if ($request->filled('date')) {
             $query->whereDate('created_at', $request->date);
         }
 
-        // 3. Search by MSISDN (Searching within JSON request_payload)
-        if ($request->has('search')) {
+        // ✅ FIXED SEARCH FILTER
+        if ($request->filled('search')) {
             $searchTerm = $request->search;
+
             $query->where(function ($q) use ($searchTerm) {
                 $q->where('request_payload', 'LIKE', "%{$searchTerm}%")
                   ->orWhere('command_name', 'LIKE', "%{$searchTerm}%");
             });
         }
 
-        $logs = $query->latest()->paginate($request->query('per_page', 15));
+        // 3. Pagination
+        $logs = $query->latest()->paginate(
+            $request->query('per_page', 15)
+        );
 
         return CommandLogResource::collection($logs);
     }

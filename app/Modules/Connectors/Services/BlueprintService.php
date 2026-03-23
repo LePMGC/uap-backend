@@ -119,7 +119,7 @@ class BlueprintService
     }
 
 
-    public function getCommandTree(): array
+    public function getCommandTree(?string $search = null): array
     {
         $blueprints = config('blueprints');
 
@@ -130,22 +130,41 @@ class BlueprintService
         $tree = [];
 
         foreach ($blueprints as $slug => $config) {
-            // Fetch commands for this specific category using your existing logic
-            $commands = $this->getCommandsByCategory($slug);
+            // 1. Build the query for commands in this category
+            $query = Command::where('category_slug', $slug);
 
-            $tree[] = [
-                'slug'     => $slug,
-                'name'     => $config['name'] ?? ucfirst(str_replace('-', ' ', $slug)), // Fallback name
-                'commands' => array_map(function ($cmd) {
-                    return [
-                        'id'   => $cmd['id'],
-                        'name' => $cmd['name'],
-                        'category_slug' => $cmd['category_slug'],
-                        'action' => $cmd['action'] ?? 'run',
-                        'command_key' => $cmd['command_key']
-                    ];
-                }, $commands)
-            ];
+            // 2. Apply filtering if search is provided
+            if ($search) {
+                $searchTerm = strtolower($search);
+
+                // If the category slug itself matches the search, we show all commands in it.
+                // Otherwise, we filter by name or command_key.
+                if (!str_contains(strtolower($slug), $searchTerm)) {
+                    $query->where(function ($q) use ($searchTerm) {
+                        $q->where('name', 'ilike', "%{$searchTerm}%")
+                          ->orWhere('command_key', 'ilike', "%{$searchTerm}%");
+                    });
+                }
+            }
+
+            $commands = $query->get();
+
+            // 3. Only add the category to the tree if it has commands matching the filter
+            if ($commands->isNotEmpty()) {
+                $tree[] = [
+                    'slug'     => $slug,
+                    'name'     => $config['name'] ?? ucfirst(str_replace('-', ' ', $slug)),
+                    'commands' => $commands->map(function ($cmd) {
+                        return [
+                            'id'            => $cmd->id,
+                            'name'          => $cmd->name,
+                            'category_slug' => $cmd->category_slug,
+                            'action'        => $cmd->action ?? 'run',
+                            'command_key'   => $cmd->command_key
+                        ];
+                    })->toArray()
+                ];
+            }
         }
 
         return $tree;
