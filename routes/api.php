@@ -124,6 +124,7 @@ Route::middleware('auth:api')->group(function () {
             Route::post('/discover-headers', [BatchJobController::class, 'discoverHeaders']);
 
             Route::prefix('templates')->group(function () {
+                Route::get('/stats', [BatchJobController::class, 'stats']);
                 Route::get('/', [BatchJobController::class, 'indexTemplates']);
                 Route::post('/', [BatchJobController::class, 'storeTemplate']);
                 Route::post('/preview-mapping', [BatchJobController::class, 'previewMapping']);

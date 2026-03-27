@@ -10,7 +10,8 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 
 class JobTemplate extends Model
 {
-    use HasUuids, SoftDeletes;
+    use HasUuids;
+    use SoftDeletes;
 
     protected $fillable = [
         'name',
@@ -39,14 +40,15 @@ class JobTemplate extends Model
         'schedule_active',
         'starts_at',
         'ends_at',
+        'status'
     ];
 
     protected $casts = [
         'job_specific_config' => 'json',
         'column_mapping'      => 'json',
         'workflow_steps'      => 'json',
-        'expected_columns'    => 'json', 
-        'source_config'       => 'json', 
+        'expected_columns'    => 'json',
+        'source_config'       => 'json',
         'is_active'           => 'boolean',
         'is_scheduled'        => 'boolean',
         'next_run_at'         => 'datetime',
@@ -78,7 +80,7 @@ class JobTemplate extends Model
         return $this->hasMany(JobInstance::class);
     }
 
-    public function creator(): BelongsTo
+    public function user(): BelongsTo
     {
         return $this->belongsTo(\App\Modules\Core\UserManagement\Models\User::class, 'user_id');
     }

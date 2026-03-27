@@ -22,7 +22,8 @@ class BatchJobController extends Controller
         protected BatchOrchestrator $orchestrator,
         protected BatchSchemaService $schemaService,
         protected BatchValidationService $validatorService
-    ) {}
+    ) {
+    }
 
     public static function middleware(): array
     {
@@ -34,7 +35,7 @@ class BatchJobController extends Controller
             new Middleware(PermissionMiddleware::using('discover_batch_headers'), only: ['discoverHeaders']),
 
             // Viewing (Templates & History)
-            new Middleware(PermissionMiddleware::using('view_batch_templates|view_batch_instances'), only: ['indexTemplates', 'indexInstances', 'getInstanceStatus', 'showTemplate']),
+            new Middleware(PermissionMiddleware::using('view_batch_templates|view_batch_instances'), only: ['indexTemplates', 'indexInstances', 'getInstanceStatus', 'showTemplate', 'stats']),
 
             // Creation
             new Middleware(PermissionMiddleware::using('create_batch_templates'), only: ['storeTemplate']),
@@ -73,7 +74,7 @@ class BatchJobController extends Controller
             // CASE A: Manual File Upload
             if ($request->hasFile('file')) {
                 $file = $request->file('file');
-                
+
                 // 1. Store the file in a temp directory
                 // We use a unique name to avoid collisions during concurrent user sessions
                 $filename = 'discovery_' . auth()->id() . '_' . time() . '.' . $file->getClientOriginalExtension();
@@ -119,7 +120,6 @@ class BatchJobController extends Controller
             'name'                 => 'required|string|max:255',
             'provider_instance_id' => 'required|exists:provider_instances,id',
             'data_source_id'       => 'required|exists:data_sources,id',
-            'command_name'         => 'required|string',
             'command_id'           => 'required|exists:commands,id',
             'expected_columns'     => 'required|array|min:1',
             'column_mapping'       => 'required|array',
@@ -140,7 +140,7 @@ class BatchJobController extends Controller
                 // 1. Check for valid prefix
                 if (!str_starts_with($source, 'static:') && !str_starts_with($source, 'column:')) {
                     $validator->errors()->add(
-                        "column_mapping.{$param}", 
+                        "column_mapping.{$param}",
                         "Mapping for '{$param}' must start with 'static:' or 'column:'."
                     );
                     continue;
@@ -151,7 +151,7 @@ class BatchJobController extends Controller
                     $columnName = substr($source, 7);
                     if (!in_array($columnName, $expectedColumns)) {
                         $validator->errors()->add(
-                            "column_mapping.{$param}", 
+                            "column_mapping.{$param}",
                             "The column '{$columnName}' is not defined in the expected_columns list."
                         );
                     }
@@ -164,7 +164,7 @@ class BatchJobController extends Controller
         }
 
         $data = $validator->validated();
-        
+
         $data['job_specific_config'] = $request->input('job_specific_config', []);
         $data['workflow_steps'] = $request->input('workflow_steps', []);
         $data['source_config'] = $request->input('source_config', []);
@@ -187,7 +187,7 @@ class BatchJobController extends Controller
         return response()->json($template, 201);
     }
 
-    
+
     /**
      * Triggers an immediate run of a template.
      */
@@ -220,21 +220,21 @@ class BatchJobController extends Controller
     public function downloadFile(string $instanceId, string $type)
     {
         $instance = JobInstance::findOrFail($instanceId);
-        
+
         $files = [
             'success' => 'results_success.csv',
             'failed'  => 'results_failed.csv',
             'source'  => 'source.csv'
         ];
 
-        // Remove 'private/' from the path. 
+        // Remove 'private/' from the path.
         // Laravel usually maps the 'local' disk to 'storage/app' or 'storage/app/private'
         $path = "jobs/{$instance->id}/" . $files[$type];
 
         if (!Storage::exists($path)) {
             return response()->json([
                 'error' => 'File not found on storage',
-                'debug_path' => $path 
+                'debug_path' => $path
             ], 404);
         }
 
@@ -285,7 +285,7 @@ class BatchJobController extends Controller
             'current_status' => $instance->status,
             'user_id' => auth()->id()
         ]);
-    
+
         return response()->json([
             'id' => $instance->id,
             'status' => $instance->status,
@@ -343,16 +343,34 @@ class BatchJobController extends Controller
 
 
     /**
-     * Display a listing of job templates.
-     */
-    public function indexTemplates(Request $request)
+         * Display a listing of job templates with pagination and filtering.
+         */
+    public function indexTemplates(Request $request): \Illuminate\Http\JsonResponse
     {
-        // Filter by user or search term if needed
-        $templates = JobTemplate::with('dataSource', 'providerInstance')
-            ->latest()
-            ->paginate(15);
+        $perPage = $request->query('per_page', 15);
+        $search = $request->query('search');
 
-        return response()->json($templates);
+        $query = JobTemplate::with(['dataSource', 'providerInstance', 'user:id,name,username'])
+            ->latest();
+
+        // 1. Search Filter (Name or Description)
+        if ($search) {
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'ilike', "%{$search}%");
+                //->orWhere('description', 'ilike', "%{$search}%");
+            });
+        }
+
+        // 2. Permission-based Filtering
+        // If the user can't view all templates, only show their own
+        if (!auth()->user()->can('view_all_batch_templates')) {
+            $query->where('user_id', auth()->id());
+        }
+
+        $templates = $query->paginate($perPage);
+
+        // We use appends to ensure the search term stays in the pagination links
+        return response()->json($templates->appends($request->query()));
     }
 
     /**
@@ -378,12 +396,12 @@ class BatchJobController extends Controller
             'instance_id' => $instanceId,
             'user_id'     => auth()->id()
         ], 'WARNING');
-        
+
         // Check if the job is in a state that can be cancelled
         if (in_array($instance->status, ['pending', 'loading_data', 'dispatching', 'processing'])) {
-            
+
             // If you are using Laravel Bus Batches, you could also cancel the underlying batch
-            // $instance->cancelBusBatch(); 
+            // $instance->cancelBusBatch();
 
             $instance->update([
                 'status' => 'failed',
@@ -404,5 +422,45 @@ class BatchJobController extends Controller
             ->findOrFail($instanceId);
 
         return $this->orchestrator->generateReport($instance, $format);
+    }
+
+
+    /**
+     * Get aggregated statistics for Job Templates.
+     */
+    public function stats(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $query = JobTemplate::query();
+
+        // 1. Permission-based Filtering (same as index)
+        if (!auth()->user()->can('view_all_batch_templates')) {
+            $query->where('user_id', auth()->id());
+        }
+
+        // 2. Execute counts in a single query-set (cloning to keep the base filters)
+        $total = (clone $query)->count();
+        $active = (clone $query)->where('status', 'active')->count();
+        $failed = (clone $query)->where('status', 'failed')->count();
+        $paused = (clone $query)->where('status', 'paused')->count();
+        $completed = (clone $query)->where('status', 'completed')->count();
+
+        // 3. Calculate Success/Completion Rate
+        $completionRate = $total > 0 ? round(($completed / $total) * 100, 2) : 0;
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'total' => $total,
+                'by_status' => [
+                    'active'    => $active,
+                    'failed'    => $failed,
+                    'paused'    => $paused,
+                    'completed' => $completed,
+                ],
+                'performance' => [
+                    'completion_rate' => $completionRate, // Percentage
+                ]
+            ]
+        ]);
     }
 }

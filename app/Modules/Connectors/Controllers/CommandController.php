@@ -55,10 +55,10 @@ class CommandController extends Controller
         }
 
         // Access Control: Global commands OR user-specific custom ones
-        $query->where(function ($q) {
+        /* $query->where(function ($q) {
             $q->where('is_custom', false)
               ->orWhere('created_by', auth()->id());
-        });
+        }); */
 
         $paginatedCommands = $query->orderBy('id', 'desc')->paginate($perPage);
 
