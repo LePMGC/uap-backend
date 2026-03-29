@@ -5,84 +5,117 @@ namespace App\Modules\Connectors\Services;
 use App\Modules\Connectors\Models\DataSource;
 use App\Modules\Connectors\DataSources\DataSourceFactory;
 use League\Csv\Reader;
+use Illuminate\Support\Facades\Log;
+use App\Modules\Core\Auditing\Services\UapLogger;
 
 class BatchSchemaService
 {
     /**
-     * Discovers headers by connecting to the defined DataSource 
-     * and applying the specific Template configuration.
+     * Direct discovery for manual file uploads.
      */
-
-    /**
-     * Discovers headers by connecting to the defined DataSource 
-     * and applying the specific Template configuration.
-     */
-    public function discoverHeaders(DataSource $source, array $sourceConfig): array
+    public function getSchemaFromUpload($file, int $limit = 5): array
     {
-        // Log the start of the discovery process
-        \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_STARTED', [
-            'source_type' => $source->type,
-            'source_id'   => $source->id,
-            'user_provided_config' => $sourceConfig
-        ]);
-
         try {
-            // 1. Get the connector (SftpConnector, DatabaseConnector, etc.)
-            $connector = DataSourceFactory::make($source->type);
+            $csv = Reader::createFromPath($file->getRealPath(), 'r');
+            $csv->setHeaderOffset(0);
 
-            // 2. Merge connection details from DB with resource details from UI
-            $connectionSettings = is_array($source->connection_settings)
-                ? $source->connection_settings
-                : json_decode($source->connection_settings ?? '{}', true);
+            $headers = $csv->getHeader();
+            $rows = [];
 
-            $fullConfig = array_merge(
-                $connectionSettings ?? [],
-                $sourceConfig
-            );
-
-            // 3. Resolve placeholders if the user used them in the discovery path
-            $resolvedConfig = app(BatchOrchestrator::class)->resolvePlaceholders($fullConfig);
-
-            // 4. Fetch the first row and return keys
-            $headers = [];
-            foreach ($connector->fetchData($resolvedConfig) as $row) {
-                $headers = array_keys((array) $row);
-                break; // We only need the first row for headers
+            $records = $csv->getRecords();
+            $count = 0;
+            foreach ($records as $record) {
+                if ($count >= $limit) {
+                    break;
+                }
+                $rows[] = $record;
+                $count++;
             }
 
-            if (empty($headers)) {
-                \App\Modules\Core\Auditing\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_EMPTY', [
-                    'resolved_config' => $resolvedConfig
-                ], 'FAILURE');
-                return [];
-            }
-
-            // Log successful discovery
-            \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'HEADER_DISCOVERY_COMPLETED', [
-                'headers_found_count' => count($headers),
-                'headers' => $headers
-            ]);
-
-            return $headers;
-
+            return [
+                'headers' => $headers,
+                'rows'    => $rows
+            ];
         } catch (\Exception $e) {
-            // Log the failure with exception details
-            \App\Modules\Core\Auditing\Services\UapLogger::error('SchemaService', 'HEADER_DISCOVERY_FAILED', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ], 'FAILURE');
-            
-            return [];
+            Log::error("Upload Schema Discovery Failed: " . $e->getMessage());
+            throw $e;
         }
     }
 
     /**
-     * Direct discovery for manual file uploads during template creation.
+     * Discovers schema (headers + sample rows) from a remote DataSource (DB, SFTP, API).
      */
-    public function getHeadersFromUpload($file): array
+    /**
+         * Discovers schema (headers + sample rows) from a remote DataSource.
+         */
+    public function discoverSchema(DataSource $dataSource, array $requestConfig, int $limit = 5): array
     {
-        $csv = Reader::createFromPath($file->getRealPath(), 'r');
-        $csv->setHeaderOffset(0);
-        return $csv->getHeader();
+        try {
+            \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'REMOTE_SCHEMA_DISCOVERY_STARTED', [
+                'source_type' => $dataSource->type,
+                'source_id'   => $dataSource->id
+            ]);
+
+            $connector = DataSourceFactory::make($dataSource->type);
+
+            $connectionSettings = is_array($dataSource->connection_settings)
+                ? $dataSource->connection_settings
+                : json_decode($dataSource->connection_settings ?? '{}', true);
+
+            // 1. Handle Database Mode logic specifically
+            if ($dataSource->type === 'database') {
+                $mode = $requestConfig['mode'] ?? 'table';
+
+                if ($mode === 'query' && empty($requestConfig['query'])) {
+                    throw new \Exception("SQL Query is required when mode is set to 'query'.");
+                }
+
+                if ($mode === 'table' && empty($requestConfig['table'])) {
+                    throw new \Exception("Table name is required when mode is set to 'table'.");
+                }
+            }
+
+            // 2. Merge credentials with the specific request config
+            $fullConfig = array_merge($connectionSettings, $requestConfig);
+
+            // 3. Fetch data stream
+            $iterator = $connector->fetchData($fullConfig);
+
+            $headers = [];
+            $rows = [];
+            $count = 0;
+
+            foreach ($iterator as $row) {
+                // Convert row to associative array
+                $rowData = json_decode(json_encode($row), true);
+
+                if (empty($headers)) {
+                    $headers = array_keys($rowData);
+                }
+
+                if ($count < $limit) {
+                    $rows[] = $rowData;
+                    $count++;
+                } else {
+                    break;
+                }
+            }
+
+            if (empty($headers)) {
+                throw new \Exception("No data found to discover headers. Ensure the table/query returns results.");
+            }
+
+            return [
+                'headers' => $headers,
+                'rows'    => $rows
+            ];
+
+        } catch (\Exception $e) {
+            \App\Modules\Core\Auditing\Services\UapLogger::error('SchemaService', 'REMOTE_SCHEMA_DISCOVERY_FAILED', [
+                'type'  => $dataSource->type,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
+        }
     }
 }

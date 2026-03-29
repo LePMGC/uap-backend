@@ -24,21 +24,42 @@ class DatabaseConnector implements DataSourceInterface
      */
     public function fetchData(array $config): \Generator
     {
-        $table = $config['table'] ?? throw new \Exception("Database table not specified.");
-        
-        UapLogger::info('DataSource', 'DB_FETCH_STARTED', [
+        $mode = $config['mode'] ?? 'table';
+        $table = $config['table'] ?? null;
+        $query = $config['query'] ?? null;
+
+        // Validation based on mode
+        if ($mode === 'query' && !$query) {
+            throw new \Exception("Database SQL query not specified for query mode.");
+        }
+        if ($mode === 'table' && !$table) {
+            throw new \Exception("Database table name not specified for table mode.");
+        }
+
+        \App\Modules\Core\Auditing\Services\UapLogger::info('DataSource', 'DB_FETCH_STARTED', [
             'database' => $config['database'],
-            'table' => $table
+            'mode'     => $mode,
+            'target'   => $mode === 'query' ? 'Custom SQL' : $table
         ]);
 
         try {
             $connection = $this->getTempConnection($config);
-            foreach ($connection->table($table)->cursor() as $row) {
+
+            $query = rtrim(trim($query), ';');
+
+            // Determine the base query builder instance
+            $queryBuilder = ($mode === 'query')
+                ? $connection->table(\DB::raw("({$query}) as sub_query"))
+                : $connection->table($table);
+
+            // Use cursor for memory-efficient streaming (Generator)
+            foreach ($queryBuilder->cursor() as $row) {
                 yield (array) $row;
             }
+
         } catch (\Exception $e) {
-            UapLogger::error('DataSource', 'DB_FETCH_FAILED', [
-                'table' => $table,
+            \App\Modules\Core\Auditing\Services\UapLogger::error('DataSource', 'DB_FETCH_FAILED', [
+                'mode'  => $mode,
                 'error' => $e->getMessage()
             ]);
             throw $e;

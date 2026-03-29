@@ -121,7 +121,7 @@ Route::middleware('auth:api')->group(function () {
 
         // Batch Engine
         Route::prefix('batch')->group(function () {
-            Route::post('/discover-headers', [BatchJobController::class, 'discoverHeaders']);
+            Route::post('/discover-headers-and-first-rows', [BatchJobController::class, 'discoverHeadersAnFirstRows']);
 
             Route::prefix('templates')->group(function () {
                 Route::get('/stats', [BatchJobController::class, 'stats']);

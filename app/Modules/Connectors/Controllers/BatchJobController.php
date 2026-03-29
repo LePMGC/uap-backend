@@ -62,47 +62,47 @@ class BatchJobController extends Controller
      * The FE sends the connection ID and the resource details (table, path, etc.)
      * The API returns the headers so the user can proceed to Step 3 (Mapping).
      */
-    public function discoverHeaders(Request $request)
+    public function discoverHeadersAnFirstRows(Request $request): \Illuminate\Http\JsonResponse
     {
         $request->validate([
             'data_source_id' => 'required_without:file|exists:data_sources,id',
-            'file'           => 'required_without:data_source_id|file|mimes:csv,txt|max:10240',
+            'file'           => 'required_without:data_source_id|file|mimes:csv,txt,xlsx|max:10240',
             'source_config'  => 'required_with:data_source_id|array',
+            'number_of_rows' => 'integer|min:1|max:100'
         ]);
 
+        $rowCount = $request->get('number_of_rows', 5);
+
         try {
-            // CASE A: Manual File Upload
+            // CASE A: Manual File Upload (Already implemented)
             if ($request->hasFile('file')) {
                 $file = $request->file('file');
-
-                // 1. Store the file in a temp directory
-                // We use a unique name to avoid collisions during concurrent user sessions
                 $filename = 'discovery_' . auth()->id() . '_' . time() . '.' . $file->getClientOriginalExtension();
                 $tempPath = $file->storeAs('temp/batch_discovery', $filename);
-
-                // 2. Extract headers using the service
-                $headers = $this->schemaService->getHeadersFromUpload($file);
+                $discovery = $this->schemaService->getSchemaFromUpload($file, $rowCount);
 
                 return response()->json([
-                    'headers' => $headers,
-                    'temporary_path' => $tempPath, // FE will send this back in storeTemplate
-                    'source_type' => 'upload'
+                    'headers'        => $discovery['headers'],
+                    'preview'        => $discovery['rows'],
+                    'temporary_path' => $tempPath,
+                    'source_type'    => 'upload'
                 ]);
             }
 
-            // CASE B: Existing DataSource (SFTP, DB, API)
+            // CASE B: Remote DataSources (SFTP, DB, API)
             $dataSource = \App\Modules\Connectors\Models\DataSource::findOrFail($request->data_source_id);
 
-            \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'REMOTE_HEADER_DISCOVERY_REQUESTED', [
-                'user_id' => auth()->id(),
-                'source_name' => $source->name,
-                'config_keys' => array_keys($request->source_config)
-            ]);
-
-            $headers = $this->schemaService->discoverHeaders($dataSource->type, $request->source_config);
+            // Pass the config and the model to the service
+            // The service will use $dataSource->type to decide how to connect
+            $discovery = $this->schemaService->discoverSchema(
+                $dataSource, // Pass the whole model to get type and connection_settings
+                $request->source_config,
+                $rowCount
+            );
 
             return response()->json([
-                'headers' => $headers,
+                'headers'     => $discovery['headers'],
+                'preview'     => $discovery['rows'],
                 'source_type' => $dataSource->type
             ]);
 
