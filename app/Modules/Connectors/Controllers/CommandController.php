@@ -37,13 +37,14 @@ class CommandController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $perPage = $request->query('per_page', 15);
-
         $query = Command::query();
 
+        // 1. Apply existing filters
         if ($request->filled('search')) {
-            $query->where('name', 'ilike', '%' . $request->query('search') . '%')
+            $query->where(function ($q) use ($request) {
+                $q->where('name', 'ilike', '%' . $request->query('search') . '%')
                   ->orWhere('command_key', 'ilike', '%' . $request->query('search') . '%');
+            });
         }
 
         if ($request->filled('category')) {
@@ -54,42 +55,70 @@ class CommandController extends Controller
             $query->where('action', $request->action);
         }
 
-        // Access Control: Global commands OR user-specific custom ones
-        /* $query->where(function ($q) {
-            $q->where('is_custom', false)
-              ->orWhere('created_by', auth()->id());
-        }); */
+        // 2. Minimal/Dropdown Mode
+        if ($request->boolean('minimal')) {
+            // We use get() instead of paginate() because dropdowns
+            // usually need the full list to search locally.
+            $commands = $query->orderBy('name', 'asc')
+                              ->get(['id', 'name', 'command_key']);
 
+            return response()->json([
+                'success' => true,
+                'data' => $commands
+            ]);
+        }
+
+        // 3. Standard Paginated Mode
+        $perPage = $request->query('per_page', 15);
         $paginatedCommands = $query->orderBy('id', 'desc')->paginate($perPage);
 
         return response()->json($paginatedCommands);
     }
 
     /**
-     * Display the full blueprint of a command, including nested parameters.
+    * Display the specified command.
      */
     public function show($id): JsonResponse
     {
         $command = Command::findOrFail($id);
-        $provider = ProviderFactory::make([], ['category_slug' => $command->category_slug]);
 
-        $parsed = $provider->parseSamplePayload($command->request_payload ?? "");
+        // 1. Initialize Provider via Factory
+        $provider = ProviderFactory::make([], $command->toArray());
 
-        // Merge system and user params for the form
-        $combinedParams = array_merge($parsed['system_params'], $parsed['params']);
+        // 2. Get the standard parsed data (contains parameters + system_params)
+        $parsedData = $provider->parseSamplePayload($command->request_payload);
 
-        $response = $command->toArray();
+        // 3. Generate the specific Mapping Blueprint (filtered for user inputs)
+        $blueprint = $provider->getMappingBlueprint($command->request_payload);
 
-        // OVERWRITE: Use the injected raw XML so FE 'Raw Mode' matches 'Form Mode'
-        $response['parameters'] = $combinedParams;
-        $response['request_payload'] = $parsed['raw_payload'];
+        $mergedParams = array_merge(
+            $parsedData['system_params'] ?? [],
+            $parsedData['params'] ?? []
+        );
 
-        $response['meta'] = [
-            'method' => $parsed['method'],
-            'system_keys' => array_keys($parsed['system_params'])
-        ];
+        return response()->json([
+            'id'                => $command->id,
+            'category_slug'     => $command->category_slug,
+            'name'              => $command->name,
+            'command_key'       => $command->command_key,
+            'action'            => $command->action,
+            'description'       => $command->description,
+            'request_payload'   => $command->request_payload,
+            'system_params'     => $command->system_params,
+            'is_custom'         => $command->is_custom,
+            'created_at'        => $command->created_at,
+            'updated_at'        => $command->updated_at,
 
-        return response()->json($response);
+            // Values exactly as they are in your current response
+            'parameters'        => $mergedParams,
+            'meta'              => [
+                'method'       => $parsedData['method'] ?? $command->command_key,
+                'system_keys'  => array_keys($parsedData['system_params'] ?? [])
+            ],
+
+            // The specific list for the Batch Job Mapping Wizard (Filtered)
+            'mapping_blueprint' => $blueprint
+        ]);
     }
 
     /**

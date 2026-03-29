@@ -432,4 +432,77 @@ class UcipProvider extends BaseProvider
             throw new \Exception("Failed to parse UCIP sample: " . $e->getMessage());
         }
     }
+
+    /**
+         * Generates a flattened list of parameters for FE mapping with sample values.
+         */
+    public function getMappingBlueprint(string $rawPayload): array
+    {
+        try {
+            $xml = new \SimpleXMLElement($rawPayload);
+            $struct = $xml->params->param->value->struct;
+            if (!$struct) {
+                return [];
+            }
+
+            return $this->flattenUcipStruct($struct);
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
+    private function flattenUcipStruct(\SimpleXMLElement $struct, string $prefix = '', int $level = 0): array
+    {
+        $params = [];
+        $systemKeys = ['originNodeType', 'originHostName', 'originTransactionID', 'originTimeStamp', 'originOperatorID'];
+
+        foreach ($struct->member as $member) {
+            $name = (string)$member->name;
+
+            // Skip system parameters
+            if (in_array($name, $systemKeys)) {
+                continue;
+            }
+
+            $key = $prefix ? "{$prefix}.{$name}" : $name;
+            $valueNode = $member->value->children()[0] ?? null;
+            $type = $valueNode ? $valueNode->getName() : 'string';
+
+            // Extract the actual value from the sample payload
+            $sampleValue = $this->extractXmlValue($member->value);
+
+            if ($type === 'struct') {
+                $params[] = [
+                    'key' => $key,
+                    'type' => 'Struct',
+                    'level' => $level,
+                    'isParent' => true,
+                    'value' => null // Structs don't have a single scalar value
+                ];
+                $params = array_merge($params, $this->flattenUcipStruct($valueNode, $key, $level + 1));
+            } elseif ($type === 'array') {
+                $params[] = [
+                    'key' => $key,
+                    'type' => 'Array',
+                    'level' => $level,
+                    'isParent' => true,
+                    'value' => null
+                ];
+                // Peek into the first element of the array for the blueprint
+                if (isset($valueNode->data->value->struct)) {
+                    $params = array_merge($params, $this->flattenUcipStruct($valueNode->data->value->struct, $key, $level + 1));
+                }
+            } else {
+                $params[] = [
+                    'key' => $key,
+                    'type' => ($type === 'i4' || $type === 'int') ? 'Integer' : ucfirst($type),
+                    'level' => $level,
+                    'isParent' => false,
+                    'is_required' => true,
+                    'value' => $sampleValue // <--- Added the property value here
+                ];
+            }
+        }
+        return $params;
+    }
 }
