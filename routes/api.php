@@ -91,6 +91,7 @@ Route::middleware('auth:api')->group(function () {
                 Route::post('/', [CommandController::class, 'store']);
                 Route::put('/{id}', [CommandController::class, 'update']);
                 Route::delete('/{id}', [CommandController::class, 'destroy']);
+                Route::post('/{id}/project-payload', [CommandController::class, 'projectPayload']);
             });
         });
 

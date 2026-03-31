@@ -75,35 +75,44 @@ class UcipProvider extends BaseProvider
     }
 
     /**
-     * Handles UCIP Data Types: string, int, boolean, dateTime, and structs
-     */
+    * Handles UCIP Data Types: string, int, boolean, dateTime, structs, and ARRAYS
+    */
     private function encodeValue($value): string
     {
-        // If it's an array, it's a struct
         if (is_array($value)) {
-            $struct = "<struct>";
-            foreach ($value as $k => $v) {
-                $struct .= "<member><name>{$k}</name><value>{$this->encodeValue($v)}</value></member>";
+            // Check if it's a sequential array (List) or associative array (Struct)
+            $isList = !empty($value) && array_keys($value) === range(0, count($value) - 1);
+
+            if ($isList) {
+                // UCIP Array Format: <array><data><value>...
+                $xml = "<array><data>";
+                foreach ($value as $item) {
+                    $xml .= "<value>" . $this->encodeValue($item) . "</value>";
+                }
+                return $xml . "</data></array>";
+            } else {
+                // UCIP Struct Format: <struct><member>...
+                $struct = "<struct>";
+                foreach ($value as $k => $v) {
+                    $struct .= "<member><name>{$k}</name><value>{$this->encodeValue($v)}</value></member>";
+                }
+                return $struct . "</struct>";
             }
-            return $struct . "</struct>";
         }
 
-        // Explicitly handle Integers
         if (is_int($value)) {
             return "<i4>{$value}</i4>";
         }
 
-        // Explicitly handle Booleans
         if (is_bool($value)) {
             return "<boolean>" . ($value ? "1" : "0") . "</boolean>";
         }
 
-        // Handle ISO8601 strings
+        // Handle ISO8601 strings (Ensuring system timestamps use the correct tag)
         if (is_string($value) && preg_match('/^\d{8}T\d{2}:\d{2}:\d{2}/', $value)) {
             return "<dateTime.iso8601>{$value}</dateTime.iso8601>";
         }
 
-        // Default to string
         return "<string>{$value}</string>";
     }
 

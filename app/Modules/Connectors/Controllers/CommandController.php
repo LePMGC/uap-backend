@@ -9,11 +9,13 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use App\Modules\Connectors\Services\BlueprintService;
 use App\Modules\Connectors\Providers\ProviderFactory;
+use App\Modules\Connectors\Services\BatchSchemaService;
 
 class CommandController extends Controller
 {
     public function __construct(
-        protected BlueprintService $blueprintService
+        protected BlueprintService $blueprintService,
+        protected BatchSchemaService $batchService
     ) {
     }
 
@@ -183,5 +185,38 @@ class CommandController extends Controller
         $command->delete();
 
         return response()->json(['message' => 'Command deleted successfully']);
+    }
+
+    /**
+     * POST /api/management/commands/{id}/project-payload
+     */
+    public function projectPayload(Request $request, $id): JsonResponse
+    {
+        $command = Command::findOrFail($id);
+
+        $validated = $request->validate([
+            'mapping'     => 'required|array',
+            'sample_data' => 'required|array',
+        ]);
+
+        try {
+            $projectedPayload = $this->batchService->projectCommandPayload(
+                $command,
+                $validated['mapping'],
+                $validated['sample_data']
+            );
+
+            return response()->json([
+                'success' => true,
+                'command_key' => $command->command_key,
+                'projected_payload' => $projectedPayload
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Payload projection failed: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }

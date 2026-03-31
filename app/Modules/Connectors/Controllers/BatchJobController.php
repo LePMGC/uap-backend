@@ -136,25 +136,39 @@ class BatchJobController extends Controller
             $mapping = $request->input('column_mapping', []);
             $expectedColumns = $request->input('expected_columns', []);
 
-            foreach ($mapping as $param => $source) {
-                // 1. Check for valid prefix
-                if (!str_starts_with($source, 'static:') && !str_starts_with($source, 'column:')) {
-                    $validator->errors()->add(
-                        "column_mapping.{$param}",
-                        "Mapping for '{$param}' must start with 'static:' or 'column:'."
-                    );
+            foreach ($mapping as $param => $config) {
+                // Ensure each mapping is an array/object
+                if (!is_array($config)) {
+                    $validator->errors()->add("column_mapping.{$param}", "Mapping must be a valid JSON object.");
                     continue;
                 }
 
-                // 2. If it's a column, verify it exists in the template definition
-                if (str_starts_with($source, 'column:')) {
-                    $columnName = substr($source, 7);
-                    if (!in_array($columnName, $expectedColumns)) {
+                $mode = $config['mode'] ?? null;
+                $value = $config['value'] ?? null;
+                $excluded = $config['excluded'] ?? false;
+
+                if ($excluded) {
+                    continue;
+                }
+
+                // Validate Mode
+                if (!in_array($mode, ['static', 'dynamic'])) {
+                    $validator->errors()->add("column_mapping.{$param}", "Invalid mode. Use 'static' or 'dynamic'.");
+                }
+
+                // Validate Dynamic Columns against the discovered headers
+                if ($mode === 'dynamic' && !empty($expectedColumns)) {
+                    if (!in_array($value, $expectedColumns)) {
                         $validator->errors()->add(
                             "column_mapping.{$param}",
-                            "The column '{$columnName}' is not defined in the expected_columns list."
+                            "Column '{$value}' not found in the uploaded file."
                         );
                     }
+                }
+
+                // Ensure a value exists if not excluded
+                if (is_null($value) || $value === '') {
+                    $validator->errors()->add("column_mapping.{$param}", "Value is required for active mappings.");
                 }
             }
         });

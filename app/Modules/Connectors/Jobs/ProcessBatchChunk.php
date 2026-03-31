@@ -16,7 +16,11 @@ use Throwable;
 
 class ProcessBatchChunk implements ShouldQueue
 {
-    use Batchable, Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Batchable;
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
 
     /**
      * The number of times the job may be attempted.
@@ -29,11 +33,12 @@ class ProcessBatchChunk implements ShouldQueue
     public $backoff = 30;
 
     public function __construct(
-        protected $instance, 
-        protected array $chunk, 
-        protected int $commandId, 
+        protected $instance,
+        protected array $chunk,
+        protected int $commandId,
         protected ?string $traceId = null
-    ) {}
+    ) {
+    }
 
     /**
      * Execute the job.
@@ -41,7 +46,7 @@ class ProcessBatchChunk implements ShouldQueue
     public function handle(CommandExecutor $executor): void
     {
         $instance = JobInstance::with('template')->find($this->instance->id);
-        
+
         // Safety check: Don't process if the instance is gone or the batch is cancelled
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
             return;
@@ -59,40 +64,45 @@ class ProcessBatchChunk implements ShouldQueue
         $localFailed = 0;
 
         foreach ($this->chunk as $row) {
-            try {
-                // 1. Map the CSV row to the specific Command Parameter keys
-                $params = $this->mapRowToParams($row, $instance->template->column_mapping);
+            $resolvedParams = [];
+            $mapping = $this->instance->template->column_mapping;
 
-                // 2. Execute via the CommandExecutor
-                // This replaces the old BatchItemPipeline logic with the unified execution engine
-                $log = $executor->execute(
-                    $instance->template->provider_instance_id,
-                    $this->commandId,
-                    $params,
-                    $instance->template->user_id,
-                    $instance->id, // Passing JobInstance ID for the log relationship
-                    $this->traceId
-                );
-
-                if ($log->is_successful) {
-                    $localProcessed++;
-                    $this->appendLocked($successFile, array_merge($row, [
-                        $log->id, 
-                        'YES', 
-                        ''
-                    ]));
-                } else {
-                    throw new \Exception($log->raw_response ?? 'Provider rejected request');
+            foreach ($mapping as $paramName => $config) {
+                if ($config['excluded'] ?? false) {
+                    continue;
                 }
 
-            } catch (Throwable $e) {
-                $localFailed++;
-                $this->appendLocked($failedFile, array_merge($row, [
-                    'N/A', 
-                    'NO', 
-                    $e->getMessage()
-                ]));
+                if ($config['mode'] === 'dynamic') {
+                    // Pull the value from the CSV column named in 'value'
+                    $columnName = $config['value'];
+                    $resolvedParams[$paramName] = $row[$columnName] ?? null;
+                } else {
+                    // Static value
+                    $resolvedParams[$paramName] = $config['value'];
+                }
             }
+
+            // Now, we must UNFLATTEN the resolvedParams (dot notation to nested array)
+            // before sending to the CommandExecutor/Provider
+            $nestedParams = [];
+            foreach ($resolvedParams as $key => $value) {
+                \Illuminate\Support\Arr::set($nestedParams, $key, $value);
+            }
+
+            // Special fix for UCIP arrays if needed (matching our BatchSchemaService logic)
+            if (isset($nestedParams['dedicatedAccountUpdateInformation']) &&
+                !isset($nestedParams['dedicatedAccountUpdateInformation'][0])) {
+                $nestedParams['dedicatedAccountUpdateInformation'] = [$nestedParams['dedicatedAccountUpdateInformation']];
+            }
+
+            // Execute via the existing CommandExecutor
+            $this->executor->execute(
+                $this->instance->provider_instance_id,
+                $this->commandId,
+                $nestedParams, // Pass the structured nested array
+                $this->instance->template->user_id,
+                $this->instance->id
+            );
         }
 
         fclose($successFile);

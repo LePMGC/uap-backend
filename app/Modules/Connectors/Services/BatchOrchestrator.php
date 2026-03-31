@@ -19,7 +19,6 @@ class BatchOrchestrator
      */
     public function execute(JobInstance $instance, ?string $traceId = null): void
     {
-        // 1. Eager load template and its associated command metadata
         $instance->load('template.command');
         $command = $instance->template->command;
 
@@ -31,7 +30,6 @@ class BatchOrchestrator
             'instance_id' => $instance->id,
             'template_id' => $instance->job_template_id,
             'command_id'  => $command->id,
-            'command_key' => $command->command_key
         ], $traceId);
 
         $instance->update(['status' => 'processing', 'started_at' => now()]);
@@ -39,28 +37,27 @@ class BatchOrchestrator
         Storage::makeDirectory($dir);
 
         try {
-            // 2. Ingest & Prepare Data
-            $totalRecords = $this->ingestToLocalFile($instance, $dir);
+            $this->ingestToLocalFile($instance, $dir);
             $headers = $this->getCsvHeaders($dir);
             $this->initializeResultFiles($dir, $headers);
 
-            // 3. Pre-Flight Validation: Check CSV Mapping vs Command Blueprint
+            // 1. Updated Validation to handle JSON structure
             $this->validateMapping($instance->template);
 
-            // 4. Prepare Chunks
             $reader = Reader::createFromPath(Storage::path("{$dir}/source.csv"), 'r');
             $reader->setHeaderOffset(0);
-            
-            // To handle very large files efficiently, we chunk the iterator
+
+            // We convert to array for chunking.
+            // Note: For multi-million row files, consider a custom ChunkIterator to save memory.
             $chunks = array_chunk(iterator_to_array($reader->getRecords()), 500);
 
             $jobs = [];
             foreach ($chunks as $chunk) {
-                // Pass the specific commandId to the worker job
+                // We pass the instance and the raw chunk.
+                // The ProcessBatchChunk job will resolve the JSON mapping for each row.
                 $jobs[] = new ProcessBatchChunk($instance, $chunk, $command->id, $traceId);
             }
 
-            // 5. Dispatch the Batch Pipeline
             Bus::batch($jobs)
                 ->name("Batch_Job_{$instance->id}")
                 ->then(function ($batch) use ($instance, $traceId) {
@@ -68,15 +65,7 @@ class BatchOrchestrator
                     $service->finalize($instance, 'completed', $traceId);
                 })
                 ->catch(function ($batch, Throwable $e) use ($instance, $traceId) {
-                    UapLogger::error('BatchEngine', 'BATCH_CRITICAL_FAILURE', [
-                        'instance_id' => $instance->id,
-                        'error' => $e->getMessage()
-                    ], $traceId);
-                    
-                    $instance->update([
-                        'status' => 'failed', 
-                        'error_message' => $e->getMessage()
-                    ]);
+                    $instance->update(['status' => 'failed', 'error_message' => $e->getMessage()]);
                 })
                 ->dispatch();
 
@@ -85,25 +74,30 @@ class BatchOrchestrator
             throw $e;
         }
     }
-
     /**
-     * Validates that the user's column mapping covers all mandatory 
+     * Validates that the user's column mapping covers all mandatory
      * parameters defined in the Command Blueprint.
      */
     protected function validateMapping(JobTemplate $template): void
     {
-        // Fetch only parameters marked as mandatory in the database
+        // 1. Get mandatory params from the Command Blueprint
         $requiredParams = $template->command->parameters()
             ->where('is_mandatory', true)
             ->pluck('name')
             ->toArray();
 
-        // The keys of column_mapping represent the Command parameters
-        $mappedCommandKeys = array_keys($template->column_mapping);
-        $missing = array_diff($requiredParams, $mappedCommandKeys);
+        $mapping = $template->column_mapping; // This is now a JSON array
+
+        $missing = [];
+        foreach ($requiredParams as $required) {
+            // Check if the parameter exists in mapping AND is not excluded
+            if (!isset($mapping[$required]) || ($mapping[$required]['excluded'] ?? false)) {
+                $missing[] = $required;
+            }
+        }
 
         if (!empty($missing)) {
-            throw new Exception("Mapping validation failed. The following mandatory command parameters are not mapped: " . implode(', ', $missing));
+            throw new Exception("Mapping validation failed. Mandatory parameters missing or excluded: " . implode(', ', $missing));
         }
     }
 
@@ -114,13 +108,13 @@ class BatchOrchestrator
     {
         // We add 'command_log_id' so users can trace individual rows in the audit logs
         $resHeaders = array_merge($headers, [
-            'command_log_id', 
-            'is_successful', 
+            'command_log_id',
+            'is_successful',
             'error_message'
         ]);
-        
+
         $headerLine = implode(',', $resHeaders) . PHP_EOL;
-        
+
         Storage::put("{$dir}/results_success.csv", $headerLine);
         Storage::put("{$dir}/results_failed.csv", $headerLine);
     }
@@ -148,7 +142,7 @@ class BatchOrchestrator
 
         $count = count(iterator_to_array($reader->getRecords()));
         $instance->update(['total_records' => $count]);
-        
+
         return $count;
     }
 

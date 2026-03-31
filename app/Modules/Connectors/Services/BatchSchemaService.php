@@ -118,4 +118,54 @@ class BatchSchemaService
             throw $e;
         }
     }
+
+
+    /**
+    * Projects a final payload for a command based on batch mapping and sample data.
+    */
+    public function projectCommandPayload(\App\Modules\Connectors\Models\Command $command, array $mapping, array $sampleData): string
+    {
+        $dotNotationInputs = [];
+        foreach ($mapping as $paramKey => $config) {
+            if ($config['excluded'] ?? false) {
+                continue;
+            }
+
+            if ($config['mode'] === 'dynamic') {
+                $columnName = $config['value'];
+                $dotNotationInputs[$paramKey] = $sampleData[$columnName] ?? null;
+            } else {
+                $dotNotationInputs[$paramKey] = $config['value'];
+            }
+        }
+
+        // 1. Unflatten dot notation into nested associative arrays
+        $nestedInputs = [];
+        foreach ($dotNotationInputs as $key => $value) {
+            \Illuminate\Support\Arr::set($nestedInputs, $key, $value);
+        }
+
+        // 2. SPECIFIC FIX: If 'dedicatedAccountUpdateInformation' exists,
+        // wrap it in an array because UCIP expects an Array of Structs for this parameter.
+        if (isset($nestedInputs['dedicatedAccountUpdateInformation']) &&
+            !isset($nestedInputs['dedicatedAccountUpdateInformation'][0])) {
+            $nestedInputs['dedicatedAccountUpdateInformation'] = [$nestedInputs['dedicatedAccountUpdateInformation']];
+        }
+
+        // 3. Instantiate the Provider
+        $provider = \App\Modules\Connectors\Providers\ProviderFactory::make([], $command->toArray());
+
+        // 4. FIX: Use the actual keys from the command's system_params to trigger injection
+        $commandDef = [
+            'method' => $command->command_key,
+            'system_params' => $command->system_params ?? []
+        ];
+
+        // 5. Use Reflection to call buildPayload
+        $reflection = new \ReflectionClass($provider);
+        $method = $reflection->getMethod('buildPayload');
+        $method->setAccessible(true);
+
+        return $method->invoke($provider, $commandDef, $nestedInputs);
+    }
 }
