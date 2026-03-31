@@ -32,8 +32,8 @@ class CommandLogController extends Controller implements HasMiddleware
     }
 
     /**
-         * List command logs with intelligent permission filtering and UI metadata.
-         */
+    * List command logs with intelligent permission filtering and UI metadata.
+    */
     public function index(Request $request): AnonymousResourceCollection|JsonResponse
     {
         $user = auth()->user();
@@ -47,55 +47,30 @@ class CommandLogController extends Controller implements HasMiddleware
 
         // 1. Authorization Logic
         if (!$user->can('view_all_command_logs')) {
-            if ($user->can('view_own_command_logs')) {
-                $query->where('user_id', $user->id);
-            } else {
-                return response()->json(['message' => 'Forbidden'], 403);
-            }
+            $query->where('user_id', $user->id);
         }
 
-        // 2. Filters (ONLY applied if values are NOT empty)
-
-        if ($request->filled('command_id')) {
-            $query->where('command_id', $request->command_id);
+        // 2. NEW: Filter by Job Instance ID
+        // This allows viewing logs tied to a specific batch execution
+        if ($request->filled('job_instance_id')) {
+            $query->where('job_instance_id', $request->query('job_instance_id'));
         }
 
-        if ($request->filled('instance_id')) {
-            $query->where('provider_instance_id', $request->instance_id);
-        }
-
-        if ($request->filled('category')) {
-            $query->where('category_slug', $request->category);
-        }
-
-        // ✅ FIXED STATUS FILTER
-        if ($request->filled('status')) {
-            if ($request->status === 'success') {
-                $query->where('is_successful', true);
-            } elseif ($request->status === 'failed') {
-                $query->where('is_successful', false);
-            }
-            // Ignore invalid values silently
-        }
-
-        if ($request->filled('date')) {
-            $query->whereDate('created_at', $request->date);
-        }
-
-        // ✅ FIXED SEARCH FILTER
+        // 3. Additional Filters (Search, Status, etc.)
         if ($request->filled('search')) {
-            $searchTerm = $request->search;
-
-            $query->where(function ($q) use ($searchTerm) {
-                $q->where('request_payload', 'LIKE', "%{$searchTerm}%")
-                  ->orWhere('command_name', 'LIKE', "%{$searchTerm}%");
+            $query->where(function ($q) use ($request) {
+                $q->where('command_name', 'ilike', '%' . $request->query('search') . '%')
+                  ->orWhere('response_code', 'ilike', '%' . $request->query('search') . '%');
             });
         }
 
-        // 3. Pagination
-        $logs = $query->latest()->paginate(
-            $request->query('per_page', 15)
-        );
+        if ($request->filled('status')) {
+            $isSuccessful = $request->query('status') === 'success';
+            $query->where('is_successful', $isSuccessful);
+        }
+
+        // 4. Sort and Paginate
+        $logs = $query->orderBy('created_at', 'desc')->paginate($request->query('per_page', 15));
 
         return CommandLogResource::collection($logs);
     }

@@ -128,6 +128,8 @@ Route::middleware('auth:api')->group(function () {
                 Route::get('/stats', [BatchJobController::class, 'stats']);
                 Route::get('/', [BatchJobController::class, 'indexTemplates']);
                 Route::post('/', [BatchJobController::class, 'storeTemplate']);
+                Route::get('{id}', [BatchJobController::class, 'showTemplate']);
+                Route::get('{id}/instances', [BatchJobController::class, 'indexInstancesForTemplate']);
                 Route::post('/preview-mapping', [BatchJobController::class, 'previewMapping']);
 
                 Route::prefix('{id}')->group(function () {
@@ -144,6 +146,7 @@ Route::middleware('auth:api')->group(function () {
                 Route::get('/{instanceId}/download/{type}', [BatchJobController::class, 'downloadFile']);
                 Route::post('/{instanceId}/cancel', [BatchJobController::class, 'cancelInstance']);
                 Route::get('/{instanceId}/report', [BatchJobController::class, 'downloadReport']);
+                Route::get('/{instanceId}/summary', [BatchJobController::class, 'getInstanceSummary']);
             });
         });
 

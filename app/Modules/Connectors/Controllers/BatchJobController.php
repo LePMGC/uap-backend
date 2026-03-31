@@ -35,7 +35,10 @@ class BatchJobController extends Controller
             new Middleware(PermissionMiddleware::using('discover_batch_headers'), only: ['discoverHeaders']),
 
             // Viewing (Templates & History)
-            new Middleware(PermissionMiddleware::using('view_batch_templates|view_batch_instances'), only: ['indexTemplates', 'indexInstances', 'getInstanceStatus', 'showTemplate', 'stats']),
+            new Middleware(
+                PermissionMiddleware::using('view_batch_templates|view_batch_instances'),
+                only: ['indexTemplates', 'indexInstances', 'getInstanceStatus', 'showTemplate', 'stats', 'getInstanceSummary']
+            ),
 
             // Creation
             new Middleware(PermissionMiddleware::using('create_batch_templates'), only: ['storeTemplate']),
@@ -114,32 +117,25 @@ class BatchJobController extends Controller
     /**
      * STEP 3 & 5: STORE TEMPLATE (The Permanent Contract)
      */
-    public function storeTemplate(Request $request)
+    public function storeTemplate(Request $request): \Illuminate\Http\JsonResponse
     {
         $validator = Validator::make($request->all(), [
-            'name'                 => 'required|string|max:255',
+            'name' => 'required|string|max:255',
             'provider_instance_id' => 'required|exists:provider_instances,id',
-            'data_source_id'       => 'required|exists:data_sources,id',
-            'command_id'           => 'required|exists:commands,id',
-            'expected_columns'     => 'required|array|min:1',
-            'column_mapping'       => 'required|array',
-            'job_specific_config'  => 'required|array',
-            'workflow_steps'       => 'nullable|array',
-            'source_config'       => 'required|array',
-            // Optional Scheduling
-            'is_scheduled'         => 'boolean',
-            'cron_expression'      => 'required_if:is_scheduled,true|nullable',
+            'data_source_id' => 'required|exists:data_sources,id',
+            'command_id' => 'required|exists:commands,id',
+            'column_mapping' => 'required|array',
+            'source_config' => 'required|array',
+            'is_scheduled' => 'boolean',
+            'cron_expression' => 'required_if:is_scheduled,true|nullable|string',
         ]);
 
-        // Custom Validation for the Column Mapping Logic
         $validator->after(function ($validator) use ($request) {
             $mapping = $request->input('column_mapping', []);
             $expectedColumns = $request->input('expected_columns', []);
 
             foreach ($mapping as $param => $config) {
-                // Ensure each mapping is an array/object
                 if (!is_array($config)) {
-                    $validator->errors()->add("column_mapping.{$param}", "Mapping must be a valid JSON object.");
                     continue;
                 }
 
@@ -151,24 +147,16 @@ class BatchJobController extends Controller
                     continue;
                 }
 
-                // Validate Mode
-                if (!in_array($mode, ['static', 'dynamic'])) {
-                    $validator->errors()->add("column_mapping.{$param}", "Invalid mode. Use 'static' or 'dynamic'.");
-                }
-
-                // Validate Dynamic Columns against the discovered headers
                 if ($mode === 'dynamic' && !empty($expectedColumns)) {
                     if (!in_array($value, $expectedColumns)) {
-                        $validator->errors()->add(
-                            "column_mapping.{$param}",
-                            "Column '{$value}' not found in the uploaded file."
-                        );
+                        $validator->errors()->add("column_mapping.{$param}", "Column '{$value}' not found in file.");
                     }
                 }
+            }
 
-                // Ensure a value exists if not excluded
-                if (is_null($value) || $value === '') {
-                    $validator->errors()->add("column_mapping.{$param}", "Value is required for active mappings.");
+            if ($request->is_scheduled && $request->cron_expression) {
+                if (!\Cron\CronExpression::isValid($request->cron_expression)) {
+                    $validator->errors()->add('cron_expression', 'The cron expression is invalid.');
                 }
             }
         });
@@ -177,28 +165,74 @@ class BatchJobController extends Controller
             return response()->json(['errors' => $validator->errors()], 422);
         }
 
-        $data = $validator->validated();
+        // 1. Create the Template
+        $template = JobTemplate::create([
+            'id' => \Illuminate\Support\Str::uuid(),
+            'name' => $request->name,
+            'user_id' => auth()->id(),
+            'provider_instance_id' => $request->provider_instance_id,
+            'data_source_id' => $request->data_source_id,
+            'command_id' => $request->command_id,
+            'column_mapping' => $request->column_mapping,
+            'job_specific_config' => $request->job_specific_config ?? [],
+            'source_config' => $request->source_config,
+            'expected_columns' => $request->expected_columns ?? [],
+            'is_scheduled' => $request->is_scheduled ?? false,
+            'cron_expression' => $request->cron_expression,
+            'status' => 'active',
+            'workflow_steps' => $request->workflow_steps ?? [],
+        ]);
 
-        $data['job_specific_config'] = $request->input('job_specific_config', []);
-        $data['workflow_steps'] = $request->input('workflow_steps', []);
-        $data['source_config'] = $request->input('source_config', []);
-        $data['user_id'] = auth()->id();
+        // 2. Immediate Execution Logic
+        if (!$template->is_scheduled) {
+            try {
+                $instance = JobInstance::create([
+                    'job_template_id' => $template->id,
+                    'provider_instance_id' => $template->provider_instance_id,
+                    'status' => 'pending',
+                ]);
 
-        // Handle Cron validation if scheduled
-        if ($request->is_scheduled && $request->cron_expression) {
-            if (!CronExpression::isValidExpression($request->cron_expression)) {
-                return response()->json(['error' => 'Invalid Cron Expression'], 422);
+                // Trigger the orchestrator
+                $this->orchestrator->execute($instance);
+
+                // Log Success
+                \App\Modules\Core\Auditing\Services\UapLogger::info('BatchEngine', 'IMMEDIATE_RUN_STARTED', [
+                    'template_id' => $template->id,
+                    'instance_id' => $instance->id,
+                    'user_id'     => auth()->id()
+                ]);
+
+                return response()->json([
+                    'message' => 'Job template created and execution started successfully.',
+                    'template' => $template,
+                    'instance_id' => $instance->id
+                ], 201);
+
+            } catch (\Exception $e) {
+                // Log Failure
+                \App\Modules\Core\Auditing\Services\UapLogger::error('BatchEngine', 'IMMEDIATE_RUN_TRIGGER_FAILED', [
+                    'template_id' => $template->id,
+                    'error'       => $e->getMessage(),
+                    'user_id'     => auth()->id()
+                ]);
+
+                return response()->json([
+                    'message' => 'Template created, but failed to start execution: ' . $e->getMessage(),
+                    'template' => $template
+                ], 201);
             }
         }
 
-        $template = JobTemplate::create($data);
-
-        \App\Modules\Core\Auditing\Services\UapLogger::info('BatchEngine', 'TEMPLATE_CREATED', [
+        // Log Scheduled Creation
+        \App\Modules\Core\Auditing\Services\UapLogger::info('BatchEngine', 'TEMPLATE_SCHEDULED', [
             'template_id' => $template->id,
-            'name' => $template->name
+            'cron'        => $template->cron_expression
         ]);
 
-        return response()->json($template, 201);
+        return response()->json([
+            'message' => 'Batch job template scheduled successfully.',
+            'template' => $template
+        ], 201);
     }
 
 
@@ -388,15 +422,48 @@ class BatchJobController extends Controller
     }
 
     /**
-     * Display a listing of job instances (Execution History).
-     */
-    public function indexInstances(Request $request)
+     * Display the specific batch template details.
+     * GET /api/batch/templates/{id}
+    */
+    public function showTemplate(string $id): \Illuminate\Http\JsonResponse
     {
-        $instances = JobInstance::with('template')
-            ->latest()
-            ->paginate(20);
+        // Eager load command and provider instance for the frontend details view
+        $template = JobTemplate::with(['providerInstance', 'dataSource', 'user'])
+            ->findOrFail($id);
 
-        return response()->json($instances);
+        // Security: Ensure users can only see their own templates unless they have global view permissions
+        if (!auth()->user()->can('view_all_batch_templates') && $template->user_id !== auth()->id()) {
+            return response()->json(['message' => 'Unauthorized access to this template.'], 403);
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $template
+        ]);
+    }
+
+    /**
+     * List all execution instances (history) for a specific template.
+     * GET /api/batch/templates/{id}/instances
+     */
+    public function indexInstancesForTemplate(string $id): \Illuminate\Http\JsonResponse
+    {
+        $template = JobTemplate::findOrFail($id);
+
+        // Security check
+        if (!auth()->user()->can('view_all_batch_instances') && $template->user_id !== auth()->id()) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        // Get instances ordered by latest execution
+        $instances = $template->instances()
+            ->orderBy('created_at', 'desc')
+            ->paginate(15);
+
+        return response()->json([
+            'success' => true,
+            'data' => $instances
+        ]);
     }
 
     /**
@@ -474,6 +541,35 @@ class BatchJobController extends Controller
                 'performance' => [
                     'completion_rate' => $completionRate, // Percentage
                 ]
+            ]
+        ]);
+    }
+
+
+    /**
+     * Get summary statistics for a specific job instance.
+     * GET /api/batch/instances/{instanceId}/summary
+     */
+    public function getInstanceSummary(string $instanceId): \Illuminate\Http\JsonResponse
+    {
+        $instance = JobInstance::with('template:id,name')->findOrFail($instanceId);
+
+        // Security: Ensure users can only see their own instance summaries
+        /*if (!auth()->user()->can('view_all_batch_instances') && $instance->template->user_id !== auth()->id()) {
+            return response()->json(['message' => 'Unauthorized access to this instance summary.'], 403);
+        }*/
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'instance_id' => $instance->id,
+                'job_name'    => $instance->template->name,
+                'status'      => $instance->status,
+                'total'       => $instance->total_records,
+                'executed'    => $instance->processed_records + $instance->failed_records,
+                'success'     => $instance->processed_records,
+                'failed'      => $instance->failed_records,
+                'progress'    => $instance->progress_percentage // Using your existing virtual attribute
             ]
         ]);
     }

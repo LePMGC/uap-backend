@@ -80,24 +80,18 @@ class BatchOrchestrator
      */
     protected function validateMapping(JobTemplate $template): void
     {
-        // 1. Get mandatory params from the Command Blueprint
-        $requiredParams = $template->command->parameters()
-            ->where('is_mandatory', true)
-            ->pluck('name')
-            ->toArray();
+        $mapping = $template->column_mapping;
 
-        $mapping = $template->column_mapping; // This is now a JSON array
-
-        $missing = [];
-        foreach ($requiredParams as $required) {
-            // Check if the parameter exists in mapping AND is not excluded
-            if (!isset($mapping[$required]) || ($mapping[$required]['excluded'] ?? false)) {
-                $missing[] = $required;
-            }
+        if (empty($mapping)) {
+            throw new Exception("Mapping validation failed: No columns have been mapped.");
         }
 
-        if (!empty($missing)) {
-            throw new Exception("Mapping validation failed. Mandatory parameters missing or excluded: " . implode(', ', $missing));
+        // Since parameters aren't in the DB, we check if the mapping contains
+        // at least the essential keys required to build the payload.
+        foreach ($mapping as $param => $config) {
+            if (!isset($config['mode']) || !isset($config['value'])) {
+                throw new Exception("Mapping validation failed: Parameter '{$param}' has an invalid structure.");
+            }
         }
     }
 

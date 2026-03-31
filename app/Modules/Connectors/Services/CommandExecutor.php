@@ -100,18 +100,20 @@ class CommandExecutor
 
     protected function preparePayload(Command $command, array|string $userInput, $instance): string|array
     {
-        // Technical User: Raw string payload (XML/JSON)
+        // If it's already a raw string, return it
         if (is_string($userInput)) {
             return $userInput;
         }
 
-        // Non-Technical User: Form Data
+        // Resolve system params (host_name, timestamp, etc.)
         $systemParams = $this->resolveSystemParams($command->system_params ?? [], $instance);
+
+        // Merged data contains both System Params and the Dynamic/Static data from the Batch Job
         $mergedData = array_merge($systemParams, $userInput);
 
-        // If template exists, swap {{vars}}
-        if ($command->payload_template) {
-            return $this->compileTemplate($command->payload_template, $mergedData);
+        // If the command has a request_payload template (e.g., XML/JSON with {{vars}})
+        if ($command->request_payload) {
+            return $this->compileTemplate($command->request_payload, $mergedData);
         }
 
         return $mergedData;
