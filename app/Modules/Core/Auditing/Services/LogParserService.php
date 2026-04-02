@@ -10,8 +10,12 @@ class LogParserService
 {
     public function getRawLogs(string $date): Collection
     {
-        $path = "/var/log/uap/application-{$date}.log";
-        
+        $logDir = config('uap.log_path');
+        $prefix = config('uap.log_prefix');
+
+        // Matches the Laravel 'daily' driver format: prefix-YYYY-MM-DD.log
+        $path = "{$logDir}/{$prefix}-{$date}.log";
+
         if (!File::exists($path)) {
             return collect();
         }
@@ -33,18 +37,26 @@ class LogParserService
             ->values();
     }
 
-/**
-     * Get filtered logs returned as a LengthAwarePaginator.
-     */
+    /**
+         * Get filtered logs returned as a LengthAwarePaginator.
+         */
     public function getFilteredLogs(array $filters): LengthAwarePaginator
     {
         $date = $filters['date'] ?? now()->format('Y-m-d');
-        
+
         $logs = $this->getRawLogs($date)->filter(function ($entry) use ($filters) {
-            if (!empty($filters['user']) && !str_contains(strtolower($entry['user'] ?? ''), strtolower($filters['user']))) return false;
-            if (!empty($filters['module']) && ($entry['module'] ?? '') !== strtoupper($filters['module'])) return false;
-            if (!empty($filters['status']) && ($entry['status'] ?? '') !== strtoupper($filters['status'])) return false;
-            if (!empty($filters['trace_id']) && ($entry['trace_id'] ?? '') !== $filters['trace_id']) return false;
+            if (!empty($filters['user']) && !str_contains(strtolower($entry['user'] ?? ''), strtolower($filters['user']))) {
+                return false;
+            }
+            if (!empty($filters['module']) && ($entry['module'] ?? '') !== strtoupper($filters['module'])) {
+                return false;
+            }
+            if (!empty($filters['status']) && ($entry['status'] ?? '') !== strtoupper($filters['status'])) {
+                return false;
+            }
+            if (!empty($filters['trace_id']) && ($entry['trace_id'] ?? '') !== $filters['trace_id']) {
+                return false;
+            }
             return true;
         })->reverse()->values();
 
@@ -59,7 +71,7 @@ class LogParserService
         $date = $filters['date'] ?? now()->format('Y-m-d');
         $logs = $this->getRawLogs($date)->where('module', 'NETWORKAUDIT');
 
-        $stats = $logs->groupBy(fn($item) => $item['details']['provider_name'] ?? 'Unknown')
+        $stats = $logs->groupBy(fn ($item) => $item['details']['provider_name'] ?? 'Unknown')
             ->map(function ($group, $name) {
                 return [
                     'provider_name' => $name,
@@ -79,7 +91,7 @@ class LogParserService
     protected function paginateCollection(Collection $collection, int $perPage): LengthAwarePaginator
     {
         $page = request()->get('page', 1);
-        
+
         return new LengthAwarePaginator(
             $collection->forPage($page, $perPage)->values(),
             $collection->count(),

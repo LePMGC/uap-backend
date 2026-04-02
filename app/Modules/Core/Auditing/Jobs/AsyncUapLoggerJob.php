@@ -12,7 +12,10 @@ use Throwable;
 
 class AsyncUapLoggerJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
 
     protected $logData;
     protected $level;
@@ -24,7 +27,7 @@ class AsyncUapLoggerJob implements ShouldQueue
     {
         $this->logData = $logData;
         $this->level = $level;
-        
+
         // Ensure this job goes to a specific 'logging' queue to not block business logic
         $this->onQueue('logging');
     }
@@ -35,12 +38,17 @@ class AsyncUapLoggerJob implements ShouldQueue
     public function handle(): void
     {
         try {
+            // 1. Write to the file channel (uap)
             $payload = json_encode($this->logData);
             Log::channel('uap')->log($this->level, $payload);
-            broadcast(new \App\Events\AuditLogReceived($this->logData))->toOthers();
+
+            // 2. Optional: Broadcast to Frontend via Echo/Pusher
+            // Only if the class exists to avoid the "Class not found" crash
+            if (class_exists(\App\Events\AuditLogReceived::class)) {
+                broadcast(new \App\Events\AuditLogReceived($this->logData))->toOthers();
+            }
         } catch (Throwable $e) {
-            // Fallback to default laravel log if the uap channel fails
-            Log::error("ASYNC_LOGGER_WRITE_FAILURE", [
+            Log::channel('single')->error("ASYNC_LOGGER_WRITE_FAILURE", [
                 'reason' => $e->getMessage(),
                 'original_data' => $this->logData
             ]);

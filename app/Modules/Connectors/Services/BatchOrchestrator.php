@@ -160,6 +160,7 @@ class BatchOrchestrator
             'instance_id' => $instance->id,
             'status'      => $status,
             'processed'   => $instance->processed_records,
+            'success'     => $instance->success_records,
             'failed'      => $instance->failed_records
         ], $traceId);
     }

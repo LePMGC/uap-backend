@@ -4,6 +4,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request; // <--- ADD THIS LINE
+
 //use Throwable;               // <--- ADD THIS TOO for the $e variable
 
 return Application::configure(basePath: dirname(__DIR__))

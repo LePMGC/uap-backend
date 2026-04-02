@@ -127,11 +127,13 @@ return [
             'path' => storage_path('logs/laravel.log'),
         ],
 
-        'uap' => [
+       'uap' => [
             'driver' => 'daily',
-            'path' => '/var/log/uap/application.log',
+            'path' => rtrim(env('UAP_LOG_PATH', storage_path('logs')), '/')
+                    . '/' . env('UAP_LOG_PREFIX', 'application') . '.log',
             'level' => 'debug',
             'days' => 14,
+            'permission' => 0664, // newly created files are writable by group
         ],
 
     ],

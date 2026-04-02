@@ -41,7 +41,19 @@ class Kernel extends ConsoleKernel
 
         /*
         |--------------------------------------------------------------------------
-        | 3️⃣ Storage Cleanup (Resource Management)
+        | 3 Monitor Providers Instances
+        |--------------------------------------------------------------------------
+        | Cleans up jobs stuck in "running" state too long.
+        */
+        $schedule->command('telecom:monitor-health')
+            ->everyMinute(5)
+            ->withoutOverlapping()
+            ->onOneServer();
+
+
+        /*
+        |--------------------------------------------------------------------------
+        | 4 Storage Cleanup (Resource Management)
         |--------------------------------------------------------------------------
         | Deletes job result directories older than configured retention.
         */

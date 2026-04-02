@@ -566,10 +566,14 @@ class BatchJobController extends Controller
                 'job_name'    => $instance->template->name,
                 'status'      => $instance->status,
                 'total'       => $instance->total_records,
-                'executed'    => $instance->processed_records + $instance->failed_records,
-                'success'     => $instance->processed_records,
+                'executed'    => $instance->processed_records,
+                'success'     => $instance->success_records,
                 'failed'      => $instance->failed_records,
-                'progress'    => $instance->progress_percentage // Using your existing virtual attribute
+                'progress'    => $instance->progress_percentage,
+                'error_analysis' => [
+                    ['code' => 100, 'count' => '2'],
+                    ['code' => 104, 'count' => '1'],
+                ]
             ]
         ]);
     }

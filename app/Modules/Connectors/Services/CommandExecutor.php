@@ -37,6 +37,7 @@ class CommandExecutor
             'category_slug' => $instance->category_slug,
             'started_at' => now(),
             'ip_address' => request()->ip() ?? '127.0.0.1',
+            'job_instance_id' => $jobInstanceId,
         ]);
 
         $startTime = microtime(true);
@@ -129,12 +130,13 @@ class CommandExecutor
         return $template;
     }
 
+
     protected function resolveSystemParams(array $params, $instance): array
     {
         $resolved = [];
         foreach ($params as $key => $value) {
             $resolved[$key] = match ($value) {
-                '{host_name}' => $instance->host,
+                '{host_name}' => 'UAP',
                 '{auto_gen_id}' => uniqid(),
                 '{auto_gen_iso8601}' => now()->toIso8601String(),
                 default => $value

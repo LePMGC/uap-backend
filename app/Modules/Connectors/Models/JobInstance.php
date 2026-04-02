@@ -12,7 +12,8 @@ use App\Modules\Core\UserManagement\Models\User;
 
 class JobInstance extends Model
 {
-    use HasUuids, SoftDeletes;
+    use HasUuids;
+    use SoftDeletes;
 
     protected $fillable = [
         'job_template_id',
@@ -20,6 +21,7 @@ class JobInstance extends Model
         'instance_parameters',
         'total_records',
         'processed_records',
+        'success_records',
         'failed_records',
         'scheduled_at',
         'started_at',
@@ -63,14 +65,16 @@ class JobInstance extends Model
     }
 
     /**
-    * GRANULAR UX: Virtual attribute for progress bar
+    * Progress is now purely based on processed_records.
     */
     public function getProgressPercentageAttribute(): int
     {
-        if ($this->total_records <= 0) return 0;
-        
-        $done = $this->processed_records + $this->failed_records;
-        return (int) min(100, ($done / $this->total_records) * 100);
+        if ($this->total_records <= 0) {
+            return 0;
+        }
+
+        // processed_records already represents the sum of success + failure attempts
+        return (int) min(100, ($this->processed_records / $this->total_records) * 100);
     }
 
     // Ensure this is visible in API responses
