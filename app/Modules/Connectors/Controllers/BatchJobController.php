@@ -570,10 +570,7 @@ class BatchJobController extends Controller
                 'success'     => $instance->success_records,
                 'failed'      => $instance->failed_records,
                 'progress'    => $instance->progress_percentage,
-                'error_analysis' => [
-                    ['code' => 100, 'count' => '2'],
-                    ['code' => 104, 'count' => '1'],
-                ]
+                'error_analysis' => $this->orchestrator->analyzeErrorFile($instance)
             ]
         ]);
     }

@@ -36,15 +36,18 @@ class ProcessBatchChunk implements ShouldQueue
         protected $instance,
         protected array $chunk,
         protected int $commandId,
-        protected ?string $traceId = null
+        protected ?string $traceId = null,
+        protected int $heartbeat = 10
     ) {
     }
 
+
     /**
-     * Execute the job.
-     */
+    * Execute the job with dynamic "Heartbeat" updates.
+    */
     public function handle(CommandExecutor $executor): void
     {
+        // 1. Fresh fetch with relationships
         $instance = JobInstance::with(['template.command'])->find($this->instance->id);
 
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
@@ -55,42 +58,40 @@ class ProcessBatchChunk implements ShouldQueue
         $successPath = Storage::path("{$dir}/results_success.csv");
         $failedPath = Storage::path("{$dir}/results_failed.csv");
 
-        // Open file handles in append mode
         $successFile = fopen($successPath, 'a');
         $failedFile = fopen($failedPath, 'a');
 
-        $localProcessed = 0; // Total attempts in this chunk
-        $localSuccess = 0;   // Successful executions
-        $localFailed = 0;    // Failures/Exceptions
+        $localProcessed = 0;
+        $localSuccess = 0;
+        $localFailed = 0;
+
+        // This is our buffer for the heartbeat
+        $uncommittedProcessed = 0;
 
         foreach ($this->chunk as $row) {
-            $localProcessed++; // Every row in the loop is "processed"
+            $localProcessed++;
+            $uncommittedProcessed++;
 
             try {
-
+                // Parameter Mapping Logic
                 $resolvedParams = [];
-                // Use the freshly loaded $instance instead of $this->instance
                 $mapping = $instance->template->column_mapping ?? [];
-
                 foreach ($mapping as $paramName => $config) {
                     if ($config['excluded'] ?? false) {
                         continue;
                     }
-
-                    if (($config['mode'] ?? 'static') === 'dynamic') {
-                        $columnName = $config['value'];
-                        $resolvedParams[$paramName] = $row[$columnName] ?? null;
-                    } else {
-                        $resolvedParams[$paramName] = $config['value'] ?? null;
-                    }
+                    $val = ($config['mode'] ?? 'static') === 'dynamic'
+                        ? ($row[$config['value']] ?? null)
+                        : ($config['value'] ?? null);
+                    $resolvedParams[$paramName] = $val;
                 }
 
-                // Unflatten dot notation (e.g., "user.name" => ["user" => ["name" => ...]])
                 $nestedParams = [];
                 foreach ($resolvedParams as $key => $value) {
                     Arr::set($nestedParams, $key, $value);
                 }
 
+                // Execution
                 $logEntry = $executor->execute(
                     (int) $instance->template->provider_instance_id,
                     (int) $this->commandId,
@@ -101,30 +102,32 @@ class ProcessBatchChunk implements ShouldQueue
                 );
 
                 if ($logEntry->is_successful) {
-                    $localSuccess++; // Increment success
+                    $localSuccess++;
                     $this->appendLocked($successFile, array_merge($row, [
-                        'status' => 'SUCCESS',
-                        'code' => $logEntry->response_code
+                        'command_log_id' => $logEntry->command->command_key,
+                        'error_message' => $logEntry->response_code
                     ]));
                 } else {
-                    $localFailed++; // Increment failure
+                    $localFailed++;
                     $this->appendLocked($failedFile, array_merge($row, [
-                        'status' => 'FAILED',
-                        'error' => $logEntry->response_code
+                        'command_log_id' => $logEntry->command->command_key,
+                        'error_message' => $logEntry->response_code
                     ]));
                 }
 
-            } catch (Throwable $e) {
-                $localFailed++; // Increment failure on exception
+            } catch (\Throwable $e) {
+                $localFailed++;
                 $this->appendLocked($failedFile, array_merge($row, [
-                    'status' => 'EXCEPTION',
-                    'error' => $e->getMessage()
+                    'command_log_id' => 'EXCEPTION',
+                    'error_message' => $e->getMessage()
                 ]));
+            }
 
-                UapLogger::error('BatchEngine', 'ROW_EXECUTION_EXCEPTION', [
-                    'instance_id' => $instance->id,
-                    'error' => $e->getMessage()
-                ], $this->traceId);
+            // HEARTBEAT: Push to DB and Refresh local state every X rows
+            if ($uncommittedProcessed >= $this->heartbeat) {
+                $instance->increment('processed_records', $uncommittedProcessed);
+                $instance->refresh();
+                $uncommittedProcessed = 0; // Reset the heartbeat counter
             }
         }
 
@@ -135,18 +138,18 @@ class ProcessBatchChunk implements ShouldQueue
             fclose($failedFile);
         }
 
-        // Update the database with all three counters
-        $instance->update([
-            'processed_records' => $instance->processed_records + $localProcessed,
-            'success_records'   => $instance->success_records + $localSuccess,
-            'failed_records'    => $instance->failed_records + $localFailed,
-        ]);
+        // FINAL SYNC
+        if ($uncommittedProcessed > 0) {
+            $instance->increment('processed_records', $uncommittedProcessed);
+        }
+
+        // Atomic increment for success/failed
+        $instance->increment('success_records', $localSuccess);
+        $instance->increment('failed_records', $localFailed);
 
         UapLogger::info('BatchEngine', 'CHUNK_PROCESS_COMPLETED', [
             'instance_id' => $instance->id,
-            'total_attempted' => $localProcessed,
-            'success' => $localSuccess,
-            'failed'  => $localFailed
+            'chunk_total' => $localProcessed
         ], $this->traceId);
     }
 

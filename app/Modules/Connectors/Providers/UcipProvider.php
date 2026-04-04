@@ -514,4 +514,18 @@ class UcipProvider extends BaseProvider
         }
         return $params;
     }
+
+    public function extractIdentifier(string $rawPayload): ?string
+    {
+        try {
+            // Use regex for speed on raw XML or load via SimpleXML
+            // We look for the value following the subscriberNumber member name
+            if (preg_match('/<name>subscriberNumber<\/name>\s*<value><string>([^<]+)<\/string><\/value>/i', $rawPayload, $matches)) {
+                return $matches[1];
+            }
+        } catch (\Exception $e) {
+            return null;
+        }
+        return null;
+    }
 }

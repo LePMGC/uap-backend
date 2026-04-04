@@ -12,10 +12,10 @@ class UapLogger
      * Dispatches a logging job to the queue to prevent blocking the main process.
      */
     public static function log(
-        string $module, 
-        string $event, 
-        string $level = 'info', 
-        array $context = [], 
+        string $module,
+        string $event,
+        string $level = 'info',
+        array $context = [],
         ?string $status = 'SUCCESS',
         ?string $manualTraceId = null
     ) {
@@ -24,28 +24,36 @@ class UapLogger
 
         $data = [
             'timestamp'  => now()->format('Y-m-d H:i:s.u'),
-            'module'     => strtoupper($module),
-            'event'      => strtoupper($event),
-            'status'     => strtoupper($status),
-            'user'       => Auth::user()?->username ?? 'SYSTEM',
-            'trace_id'   => $traceId, 
-            'client_ip'  => request()->ip(),
-            'details'    => $context,
-        ];
+                'module'     => strtoupper($module),
+                'event'      => strtoupper($event),
+                'status'     => strtoupper($status),
+                'user'       => Auth::user()?->username ?? 'SYSTEM',
+                'trace_id'   => $traceId,
+                'client_ip'  => request()->ip(),
+                'details'    => $context,
+            ];
 
-        AsyncUapLoggerJob::dispatch($data, $level);
+        if (app()->runningInConsole()) {
+            $level = strtolower($level);
+            \Illuminate\Support\Facades\Log::channel('uap')->$level(json_encode($data));
+        } else {
+            AsyncUapLoggerJob::dispatch($data, $level);
+        }
     }
 
     // Update helper methods to accept the optional traceId
-    public static function info($module, $event, $context = [], $traceId = null) {
+    public static function info($module, $event, $context = [], $traceId = null)
+    {
         self::log($module, $event, 'info', $context, 'SUCCESS', $traceId);
     }
 
-    public static function error($module, $event, $context = []) {
+    public static function error($module, $event, $context = [])
+    {
         self::log($module, $event, 'error', $context, 'ERROR');
     }
-    
-    public static function warning($module, $event, $context = []) {
+
+    public static function warning($module, $event, $context = [])
+    {
         self::log($module, $event, 'warning', $context, 'WARNING');
     }
 }

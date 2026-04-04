@@ -12,10 +12,13 @@ class CleanupStaleJobs extends Command
 
     public function handle()
     {
-        // RELIABILITY: Fail jobs stuck in non-terminal states for > 6 hours
-        $affected = JobInstance::whereIn('status', ['loading_data', 'dispatching', 'processing', 'finalizing'])
+        // Fail jobs stuck in 'processing' for more than 6 hours
+        $affected = JobInstance::where('status', 'processing')
             ->where('updated_at', '<', now()->subHours(6))
-            ->update(['status' => 'failed']);
+            ->update([
+                'status' => 'failed',
+                'completed_at' => now()
+            ]);
 
         $this->info("Cleaned up {$affected} stale batch jobs.");
     }

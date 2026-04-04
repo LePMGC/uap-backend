@@ -181,4 +181,17 @@ class CaiProvider extends BaseProvider
 
         return ['method' => $method, 'params' => $params];
     }
+
+    public function extractIdentifier(string $rawPayload): ?string
+    {
+        try {
+            // Matches MSISDN, followed by a comma, then captures digits/chars until the next colon, semicolon, or space
+            if (preg_match('/MSISDN,([^:;,\s]+)/i', $rawPayload, $matches)) {
+                return $matches[1];
+            }
+        } catch (\Exception $e) {
+            return null;
+        }
+        return null;
+    }
 }

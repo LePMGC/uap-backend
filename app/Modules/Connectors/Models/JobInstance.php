@@ -56,27 +56,6 @@ class JobInstance extends Model
         return storage_path("app/jobs/{$this->id}");
     }
 
-    /**
-     * Check if the job is finished
-     */
-    public function isFinished(): bool
-    {
-        return in_array($this->status, ['completed', 'failed']);
-    }
-
-    /**
-    * Progress is now purely based on processed_records.
-    */
-    public function getProgressPercentageAttribute(): int
-    {
-        if ($this->total_records <= 0) {
-            return 0;
-        }
-
-        // processed_records already represents the sum of success + failure attempts
-        return (int) min(100, ($this->processed_records / $this->total_records) * 100);
-    }
-
     // Ensure this is visible in API responses
     protected $appends = ['progress_percentage'];
 
@@ -84,5 +63,21 @@ class JobInstance extends Model
     public function executor(): BelongsTo
     {
         return $this->belongsTo(User::class, 'executor_id');
+    }
+
+
+    public function isFinished(): bool
+    {
+        return in_array($this->status, ['completed', 'failed']);
+    }
+
+    public function getProgressPercentageAttribute(): int
+    {
+        if ($this->total_records <= 0) {
+            return 0;
+        }
+
+        // During 'processing', this will move from 0 to 100
+        return (int) min(100, ($this->processed_records / $this->total_records) * 100);
     }
 }

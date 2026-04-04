@@ -74,6 +74,7 @@ class CommandExecutor
                 'is_successful'    => $response['success'] ?? false,
                 'execution_time_ms' => $executionTime,
                 'ended_at'         => now(),
+                'response_code'     => $response['code'] ?? null,
             ]);
 
             return $log;
@@ -94,10 +95,12 @@ class CommandExecutor
                 ],
                 'status' => 'failed',
                 'ended_at' => now(),
+                'response_code' => 503,
             ]);
             return $log;
         }
     }
+
 
     protected function preparePayload(Command $command, array|string $userInput, $instance): string|array
     {

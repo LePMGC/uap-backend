@@ -222,4 +222,9 @@ abstract class BaseProvider
     abstract public function extractSystemParams(string $rawPayload): array;
 
     abstract public function parseSamplePayload(string $rawPayload): array;
+
+    /**
+     * Extract the primary identifier (e.g., MSISDN) from a raw request payload.
+     */
+    abstract public function extractIdentifier(string $rawPayload): ?string;
 }
