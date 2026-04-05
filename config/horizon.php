@@ -224,11 +224,20 @@ return [
             ],
         ],
 
-        'local' => [
-            'supervisor-1' => [
-                'maxProcesses' => 3,
-            ],
+       'local' => [
+        'supervisor-1' => [
+            'connection' => 'redis',
+            'queue' => ['default', 'logging'],
+            'balance' => 'auto',
+            'minProcesses' => 1,
+            'maxProcesses' => 20, // Increase this to see scaling in action
+            'balanceMaxShift' => 5, // How many workers to add at each check
+            'balanceCooldown' => 1, // How many seconds to wait between scaling checks
+            'tries' => 1,
+            'retry_after' => 610, // Must be slightly longer than your job $timeout
+            'timeout' => 600,
         ],
+    ],
     ],
 
     /*

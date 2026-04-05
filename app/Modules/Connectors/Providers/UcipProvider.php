@@ -154,9 +154,6 @@ class UcipProvider extends BaseProvider
 
             $isSuccessful = $responseCode === 0 || $responseCode === 1 || $responseCode === 2;
 
-            //log user parameters and response code for telecom auditing purposes
-            \Log::info("userParams: " . json_encode($commandDef['params'] ?? []));
-
             // TELECOM LOGGING: Log the specific provider code and its meaning
             \App\Modules\Core\Auditing\Services\UapLogger::log(
                 'EricssonUCIP',

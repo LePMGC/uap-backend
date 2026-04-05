@@ -23,8 +23,9 @@ class ProcessBatchChunk implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
-    public $tries = 3;
+    public $tries = 1;
     public $backoff = 30;
+    public $timeout = 600;
 
     /**
      * @param JobInstance $instance
@@ -129,6 +130,7 @@ class ProcessBatchChunk implements ShouldQueue
                 $instance->refresh();
                 $uncommittedProcessed = 0; // Reset the heartbeat counter
             }
+            usleep(10000); // Sleep 10ms to prevent hammering the DB in tight loops
         }
 
         if ($successFile) {
@@ -146,6 +148,12 @@ class ProcessBatchChunk implements ShouldQueue
         // Atomic increment for success/failed
         $instance->increment('success_records', $localSuccess);
         $instance->increment('failed_records', $localFailed);
+
+        $instance->refresh();
+        if ($instance->processed_records >= $instance->total_records) {
+            (new \App\Modules\Connectors\Services\BatchOrchestrator())
+                ->finalize($instance, 'completed', $this->traceId);
+        }
 
         UapLogger::info('BatchEngine', 'CHUNK_PROCESS_COMPLETED', [
             'instance_id' => $instance->id,

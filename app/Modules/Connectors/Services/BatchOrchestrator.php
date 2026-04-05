@@ -78,14 +78,23 @@ class BatchOrchestrator
             // Use a Bus Batch for Horizon to monitor
             $batch = Bus::batch($jobs)
                 ->then(function ($batch) use ($instance, $traceId) {
-                    // Use the ID to find a fresh instance in the worker process
-                    $orchestrator = new BatchOrchestrator();
-                    $orchestrator->finalize($instance->id, $traceId);
+                    (new BatchOrchestrator())->finalize($instance, 'completed', $traceId);
                 })
                 ->catch(function ($batch, Throwable $e) use ($instance, $traceId) {
-                    UapLogger::error('BatchEngine', 'BATCH_FAILED', ['error' => $e->getMessage()], $traceId);
-                    JobInstance::where('id', $instance->id)->update(['status' => 'failed']);
+                    // This fires as soon as the FIRST chunk fails.
+                    // We log it, but we don't kill the status yet because others are still running.
+                    UapLogger::warning('BatchEngine', 'CHUNK_FAILURE_DETECTED', [
+                        'instance_id' => $instance->id,
+                        'error' => $e->getMessage()
+                    ], $traceId);
                 })
+                ->finally(function ($batch) use ($instance, $traceId) {
+                    $instance->refresh();
+                    if ($instance->status !== 'completed') {
+                        (new BatchOrchestrator())->finalize($instance, 'completed', $traceId);
+                    }
+                })
+                ->allowFailures() // Ensures one bad chunk doesn't stop the 400k run
                 ->name("Batch-{$instance->id}")
                 ->dispatch();
 
@@ -116,7 +125,7 @@ class BatchOrchestrator
         if ($total > 10000) {
             return 500;
         }  // 10k+ rows -> 500 rows per job
-        return 100;                      // Small jobs -> 100 rows per job
+        return 100;
     }
 
     /**
@@ -209,18 +218,19 @@ class BatchOrchestrator
     /**
      * Updated finalize to accept ID and strictly update status
      */
-    public function finalize(string $instanceId, ?string $traceId = null): void
+    /**
+     * Updated finalize to accept the JobInstance object directly
+     */
+    public function finalize(JobInstance $instance, string $status = 'completed', ?string $traceId = null): void
     {
-        $instance = JobInstance::find($instanceId);
-
-        if (!$instance) {
-            UapLogger::error('BatchEngine', 'FINALIZE_FAILED_NOT_FOUND', ['id' => $instanceId], $traceId);
+        // Check if already completed to prevent duplicate logs/updates
+        if ($instance->status === 'completed') {
             return;
         }
 
         // Mark as completed and set the end time
         $instance->update([
-            'status' => 'completed',
+            'status' => $status,
             'completed_at' => now()
         ]);
 

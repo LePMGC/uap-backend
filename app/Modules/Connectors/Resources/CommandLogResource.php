@@ -27,8 +27,6 @@ class CommandLogResource extends JsonResource
         // 3. Extract Identifier (MSISDN) using Provider Logic
         $identifier = $this->resolveMetadataIdentifier($category);
 
-        Log::info("CommandLogResource Access - ID: {$this->id}, User: " . ($this->user->name ?? 'System'));
-
         return [
             'id' => $this->id,
 
