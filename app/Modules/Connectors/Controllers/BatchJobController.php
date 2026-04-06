@@ -15,6 +15,10 @@ use Spatie\Permission\Middleware\PermissionMiddleware;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Routing\Controllers\Middleware;
 use App\Modules\Connectors\Services\BatchValidationService;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+use League\Csv\Writer;
+use SplTempFileObject;
+use Symfony\Component\HttpFoundation\Response;
 
 class BatchJobController extends Controller
 {
@@ -391,8 +395,8 @@ class BatchJobController extends Controller
 
 
     /**
-         * Display a listing of job templates with pagination and filtering.
-         */
+    * Display a listing of job templates with pagination and filtering.
+    */
     public function indexTemplates(Request $request): \Illuminate\Http\JsonResponse
     {
         $perPage = $request->query('per_page', 15);
@@ -513,19 +517,34 @@ class BatchJobController extends Controller
     {
         $query = JobTemplate::query();
 
-        // 1. Permission-based Filtering (same as index)
+        // 1. Permission-based Filtering
         if (!auth()->user()->can('view_all_batch_templates')) {
             $query->where('user_id', auth()->id());
         }
 
-        // 2. Execute counts in a single query-set (cloning to keep the base filters)
+        // 2. Base Counts
         $total = (clone $query)->count();
         $active = (clone $query)->where('status', 'active')->count();
         $failed = (clone $query)->where('status', 'failed')->count();
         $paused = (clone $query)->where('status', 'paused')->count();
-        $completed = (clone $query)->where('status', 'completed')->count();
 
-        // 3. Calculate Success/Completion Rate
+        // 3. Updated Completed Logic
+        // Condition A: Not scheduled AND has a completed job instance
+        // Condition B: Is scheduled AND the end date (ends_at) has passed
+        $completed = (clone $query)->where(function ($q) {
+            $q->where(function ($sub) {
+                $sub->where('is_scheduled', false)
+                    ->whereHas('instances', function ($instanceQuery) {
+                        $instanceQuery->where('status', 'completed');
+                    });
+            })->orWhere(function ($sub) {
+                $sub->where('is_scheduled', true)
+                    ->whereNotNull('ends_at')
+                    ->where('ends_at', '<', now());
+            });
+        })->count();
+
+        // 4. Calculate Success/Completion Rate
         $completionRate = $total > 0 ? round(($completed / $total) * 100, 2) : 0;
 
         return response()->json([
@@ -539,7 +558,7 @@ class BatchJobController extends Controller
                     'completed' => $completed,
                 ],
                 'performance' => [
-                    'completion_rate' => $completionRate, // Percentage
+                    'completion_rate' => $completionRate,
                 ]
             ]
         ]);
@@ -575,5 +594,98 @@ class BatchJobController extends Controller
                 'error_analysis' => $this->orchestrator->analyzeErrorFile($instance)
             ]
         ]);
+    }
+
+    public function exportAllErrors(string $instanceId): StreamedResponse
+    {
+        $disk = Storage::disk('local');
+
+        $relativePath = "jobs/{$instanceId}/results_failed.csv";
+
+        if (!$disk->exists($relativePath)) {
+            abort(404, "Failure file not found at: " . $relativePath);
+        }
+
+        return $disk->download($relativePath, "errors_all_{$instanceId}.csv");
+    }
+
+    /**
+     * Export failed records filtered by a specific error code.
+     */
+    public function exportErrorsByCode(Request $request, string $instanceId): StreamedResponse
+    {
+        $errorCode = $request->query('error_code');
+
+        // Correct the path to include 'private'
+        $disk = Storage::disk('local'); // or 'private' if you defined one
+
+        $relativePath = "jobs/{$instanceId}/results_failed.csv";
+
+        if (!$disk->exists($relativePath)) {
+            abort(404, "Failure file not found at: " . $relativePath);
+        }
+
+        $sourcePath = $disk->path($relativePath);
+
+        if (!Storage::exists($relativePath)) {
+            abort(404, "Failure file not found at: " . $relativePath);
+        }
+
+        return response()->streamDownload(function () use ($sourcePath, $errorCode) {
+            $csv = Reader::createFromPath($sourcePath, 'r');
+            $csv->setHeaderOffset(0);
+
+            $writer = Writer::createFromFileObject(new \SplTempFileObject());
+            $writer->insertOne($csv->getHeader());
+
+            foreach ($csv->getRecords() as $record) {
+                $currentCode = $record['response_code'] ?? $record['status'] ?? null;
+                if ($currentCode == $errorCode) {
+                    $writer->insertOne($record);
+                }
+            }
+            echo $writer->toString();
+        }, "errors_{$errorCode}_{$instanceId}.csv");
+    }
+
+    /**
+     * Download source data file for a specific instance.
+     * GET /api/batch/instances/{instanceId}/download/source
+     */
+    public function downloadSourceFile(string $instanceId)
+    {
+        $instance = JobInstance::findOrFail($instanceId);
+
+        $path = "jobs/{$instance->id}/source.csv";
+
+        if (!Storage::exists($path)) {
+            return response()->json(['error' => 'Source file not found.'], 404);
+        }
+
+        return Storage::download($path, "job_{$instance->id}_source.csv");
+    }
+
+
+    /**
+     * Download a static generic sample CSV file.
+     */
+    public function downloadSample(): Response
+    {
+        $path = 'samples/generic_sample.csv';
+
+        if (!Storage::exists($path)) {
+            return response()->streamDownload(function () {
+                echo "msisdn,nai\n";
+                echo "242064690001,2\n";
+                echo "242064690002,2\n";
+                echo "242064690003,2\n";
+                echo "242064690004,2\n";
+            }, 'uap_sample_template.csv');
+        }
+
+        return response()->download(
+            Storage::path($path),
+            'uap_sample_template.csv'
+        );
     }
 }

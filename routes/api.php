@@ -126,6 +126,7 @@ Route::middleware('auth:api')->group(function () {
 
             Route::prefix('templates')->group(function () {
                 Route::get('/stats', [BatchJobController::class, 'stats']);
+                Route::get('/download-sample-source-file', [BatchJobController::class, 'downloadSample']);
                 Route::get('/', [BatchJobController::class, 'indexTemplates']);
                 Route::post('/', [BatchJobController::class, 'storeTemplate']);
                 Route::get('{id}', [BatchJobController::class, 'showTemplate']);
@@ -138,6 +139,7 @@ Route::middleware('auth:api')->group(function () {
                     Route::post('/toggle', [BatchJobController::class, 'toggleSchedule']);
                     Route::post('/terminate', [BatchJobController::class, 'terminateSchedule']);
                 });
+
             });
 
             Route::prefix('instances')->group(function () {
@@ -147,6 +149,9 @@ Route::middleware('auth:api')->group(function () {
                 Route::post('/{instanceId}/cancel', [BatchJobController::class, 'cancelInstance']);
                 Route::get('/{instanceId}/report', [BatchJobController::class, 'downloadReport']);
                 Route::get('/{instanceId}/summary', [BatchJobController::class, 'getInstanceSummary']);
+                Route::get('/{instanceId}/export-all-errors', [BatchJobController::class, 'exportAllErrors']);
+                Route::get('/{instanceId}/export-errors', [BatchJobController::class, 'exportErrorsByCode']);
+                Route::get('/{instanceId}/download-source', [BatchJobController::class, 'downloadSourceFile']);
             });
         });
 
