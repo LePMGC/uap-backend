@@ -6,29 +6,17 @@ use Illuminate\Console\Command;
 use App\Modules\Connectors\Models\ProviderInstance;
 use App\Modules\Connectors\Providers\ProviderFactory;
 use Exception;
+use App\Modules\Connectors\Services\BlueprintService;
 
 class MonitorProviders extends Command
 {
-    /**
-     * The name and signature of the console command.
-     * @var string
-     */
     protected $signature = 'telecom:monitor-health';
+    protected $description = 'Check connectivity for all telecom provider nodes and update status/latency';
 
-    /**
-     * The console command description.
-     * @var string
-     */
-    protected $description = 'Check connectivity for all telecom provider nodes and update status';
-
-    /**
-     * Execute the console command.
-     */
     public function handle()
     {
         $this->info("Starting Health Check for all Provider Instances...");
 
-        // 1. Fetch all instances from the database
         $instances = ProviderInstance::all();
 
         if ($instances->isEmpty()) {
@@ -37,43 +25,47 @@ class MonitorProviders extends Command
         }
 
         foreach ($instances as $instance) {
-            $this->comment("Checking Node: {$instance->name} ({$instance->category_slug})...");
+            $this->comment("Checking Node: {$instance->name}...");
 
             try {
-                // 2. Load the corresponding blueprint from backend config
-                $blueprint = config("providers.{$instance->category_slug}");
+                // 1. Get blueprint from config
+                $bluePrintService = new BlueprintService();
+                $blueprint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
 
                 if (!$blueprint) {
                     $this->error("Blueprint missing for category: {$instance->category_slug}");
                     continue;
                 }
 
+                // 2. Prepare Config for the Driver
+                // We inject 'instance_id' so the BaseProvider can update the DB internally
+                $config = $instance->connection_settings;
+                $config['instance_id'] = $instance->id;
+
                 // 3. Get the driver from the Factory
-                $provider = ProviderFactory::make(
-                    $instance->connection_settings, 
-                    $blueprint
-                );
+                $provider = ProviderFactory::make($config, $blueprint);
 
-                // 4. Trigger the heartbeat logic (defined in BaseProvider)
-                // This method internally calls checkHealth() and updates the DB
-                $provider->heartbeat($instance->id);
+                /** * 4. Trigger the connectivity check
+                 * Note: Based on your BaseProvider.php, the method is checkConnection().
+                 * This method now handles Level 1-3 checks AND updates latency_ms in the DB.
+                 */
+                $isOnline = $provider->checkConnectivity();
 
-                // Reload instance to see updated status
+                // 5. Visual Feedback in Console
                 $instance->refresh();
-
-                if ($instance->is_active) {
-                    $this->info("Result: [ONLINE] for {$instance->name}");
+                if ($isOnline) {
+                    $this->info("Result: [ONLINE] | Latency: {$instance->latency_ms}ms | Node: {$instance->name}");
                 } else {
-                    $this->error("Result: [OFFLINE] for {$instance->name}");
+                    $this->error("Result: [OFFLINE] | Node: {$instance->name}");
                 }
 
             } catch (Exception $e) {
                 $this->error("Critical error checking {$instance->name}: " . $e->getMessage());
-                
-                // Force status to inactive on exception
+
                 $instance->update([
                     'is_active' => false,
-                    'last_heartbeat_at' => now()
+                    'last_heartbeat_at' => now(),
+                    'latency_ms' => null
                 ]);
             }
         }

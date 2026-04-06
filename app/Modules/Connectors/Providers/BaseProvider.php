@@ -181,40 +181,64 @@ abstract class BaseProvider
      */
     public function checkConnectivity(): bool
     {
+        $host = $this->config['host'] ?? null;
+        $port = $this->config['port'] ?? null;
+        $instanceId = $this->config['instance_id'] ?? null;
+
+        $startTime = microtime(true);
+        $isAlive = false;
+
         try {
-            $host = $this->config['host'] ?? null;
-            $port = $this->config['port'] ?? null;
-
             if (!$host) {
-                throw new \Exception("Host is required for connectivity check.");
+                throw new \Exception("Host configuration missing.");
             }
 
-            // Level 1: Network Check (ICMP Ping)
-            if (!$this->ping($host)) {
-                throw new \Exception("Network Level: Host Unreachable (Ping Failed)");
+            // Level 1-3 Checks
+            if ($this->ping($host) &&
+                (!$port || $this->isPortOpen($host, $port)) &&
+                $this->checkHealth()) {
+                $isAlive = true;
             }
-
-            // Level 2: Transport Check (TCP Port)
-            if ($port && !$this->isPortOpen($host, $port)) {
-                throw new \Exception("Transport Level: Port $port Refused");
-            }
-
-            // Level 3: Protocol/Application Check
-            // This calls the specific checkHealth() implemented in child classes
-            if (!$this->checkHealth()) {
-                throw new \Exception("Application Level: Protocol Handshake Failed");
-            }
-
-            return true;
         } catch (\Exception $e) {
-            // Log the failure details via our custom logger for auditing
-            \App\Modules\Core\Auditing\Services\UapLogger::error('NetworkAudit', 'PRE_SAVE_CHECK_FAILED', [
-                'host'  => $this->config['host'] ?? 'N/A',
-                'error' => $e->getMessage()
-            ]);
-
-            return false;
+            $isAlive = false;
         }
+
+        $latencyMs = round((microtime(true) - $startTime) * 1000);
+
+        // Update the DB if instanceId is provided
+        if ($instanceId) {
+            $this->persistMetrics($instanceId, $isAlive, $latencyMs);
+        }
+
+        return $isAlive;
+    }
+
+    /**
+ * Internal method to handle the Rolling Health Score logic.
+ */
+    protected function persistMetrics(int $id, bool $success, int $latency): void
+    {
+        $instance = \App\Modules\Connectors\Models\ProviderInstance::find($id);
+        if (!$instance) {
+            return;
+        }
+
+        $currentScore = $instance->health_score ?? 100;
+
+        if ($success) {
+            // Recovery: +2 points for every successful heartbeat (up to 100)
+            $newScore = min(100, $currentScore + 2);
+        } else {
+            // Penalty: -15 points for every failed heartbeat
+            $newScore = max(0, $currentScore - 15);
+        }
+
+        $instance->update([
+            'is_active' => $success,
+            'latency_ms' => $success ? $latency : null,
+            'health_score' => $newScore,
+            'last_heartbeat_at' => now(),
+        ]);
     }
 
     abstract public function checkHealth(): bool;

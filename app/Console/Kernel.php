@@ -46,7 +46,7 @@ class Kernel extends ConsoleKernel
         | Cleans up jobs stuck in "running" state too long.
         */
         $schedule->command('telecom:monitor-health')
-            ->everyMinute(5)
+            ->everyMinute()
             ->withoutOverlapping()
             ->onOneServer();
 

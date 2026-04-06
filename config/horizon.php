@@ -225,19 +225,18 @@ return [
         ],
 
        'local' => [
-        'supervisor-1' => [
-            'connection' => 'redis',
-            'queue' => ['default', 'logging'],
-            'balance' => 'auto',
-            'minProcesses' => 1,
-            'maxProcesses' => 20, // Increase this to see scaling in action
-            'balanceMaxShift' => 5, // How many workers to add at each check
-            'balanceCooldown' => 1, // How many seconds to wait between scaling checks
-            'tries' => 1,
-            'retry_after' => 610, // Must be slightly longer than your job $timeout
-            'timeout' => 600,
+            'supervisor-1' => [
+                'connection' => 'redis',
+                'queue' => ['default', 'batch'],
+                'strategy' => 'auto',    // Dynamic scaling
+                'min_processes' => 1,    // Keep 1 worker alive
+                'max_processes' => 40,   // Allow up to 40 workers for high TPS providers
+                'balance' => 'auto',
+                'processes' => 10,
+                'tries' => 3,
+                'timeout' => 900,        // 15 minutes (Critical for 400k runs)
+            ],
         ],
-    ],
     ],
 
     /*

@@ -14,7 +14,11 @@ class ProviderInstance extends Model
         'category_slug',
         'connection_settings',
         'is_active',
-        'last_error_message'
+        'last_error_message',
+        'latency_ms',
+        'last_heartbeat_at',
+        'health_score',
+        'tps_limit'
     ];
 
     /**

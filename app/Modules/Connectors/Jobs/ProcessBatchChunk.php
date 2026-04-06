@@ -7,6 +7,7 @@ use App\Modules\Connectors\Services\CommandExecutor;
 use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
@@ -32,23 +33,24 @@ class ProcessBatchChunk implements ShouldQueue
      * @param array $chunk
      * @param int $commandId
      * @param string|null $traceId
+     * @param int $heartbeat
+     * @param int $targetIntervalMs  <-- Added this
      */
     public function __construct(
         protected $instance,
         protected array $chunk,
         protected int $commandId,
         protected ?string $traceId = null,
-        protected int $heartbeat = 10
+        protected int $heartbeat = 10,
+        protected int $targetIntervalMs = 0 // <-- Initialize property here
     ) {
     }
 
-
     /**
-    * Execute the job with dynamic "Heartbeat" updates.
-    */
+     * Execute the chunk with self-throttling to respect Provider TPS.
+     */
     public function handle(CommandExecutor $executor): void
     {
-        // 1. Fresh fetch with relationships
         $instance = JobInstance::with(['template.command'])->find($this->instance->id);
 
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
@@ -56,31 +58,22 @@ class ProcessBatchChunk implements ShouldQueue
         }
 
         $dir = "jobs/{$instance->id}";
-        $successPath = Storage::path("{$dir}/results_success.csv");
-        $failedPath = Storage::path("{$dir}/results_failed.csv");
+        $successFile = fopen(Storage::path("{$dir}/results_success.csv"), 'a');
+        $failedFile = fopen(Storage::path("{$dir}/results_failed.csv"), 'a');
 
-        $successFile = fopen($successPath, 'a');
-        $failedFile = fopen($failedPath, 'a');
-
-        $localProcessed = 0;
         $localSuccess = 0;
         $localFailed = 0;
-
-        // This is our buffer for the heartbeat
         $uncommittedProcessed = 0;
 
         foreach ($this->chunk as $row) {
-            $localProcessed++;
+            $rowStartTime = microtime(true); // Start timing the request
             $uncommittedProcessed++;
 
             try {
-                // Parameter Mapping Logic
+                // Parameter Mapping
                 $resolvedParams = [];
                 $mapping = $instance->template->column_mapping ?? [];
                 foreach ($mapping as $paramName => $config) {
-                    if ($config['excluded'] ?? false) {
-                        continue;
-                    }
                     $val = ($config['mode'] ?? 'static') === 'dynamic'
                         ? ($row[$config['value']] ?? null)
                         : ($config['value'] ?? null);
@@ -105,14 +98,14 @@ class ProcessBatchChunk implements ShouldQueue
                 if ($logEntry->is_successful) {
                     $localSuccess++;
                     $this->appendLocked($successFile, array_merge($row, [
-                        'command_log_id' => $logEntry->command->command_key,
-                        'error_message' => $logEntry->response_code
+                        'command_log_id' => $logEntry->command_key ?? 'N/A',
+                        'response_code' => $logEntry->response_code
                     ]));
                 } else {
                     $localFailed++;
                     $this->appendLocked($failedFile, array_merge($row, [
-                        'command_log_id' => $logEntry->command->command_key,
-                        'error_message' => $logEntry->response_code
+                        'command_log_id' => $logEntry->command_key ?? 'N/A',
+                        'response_code' => $logEntry->response_code
                     ]));
                 }
 
@@ -124,13 +117,21 @@ class ProcessBatchChunk implements ShouldQueue
                 ]));
             }
 
-            // HEARTBEAT: Push to DB and Refresh local state every X rows
+            // --- SELF THROTTLING ---
+            if ($this->targetIntervalMs > 0) {
+                $elapsedMs = (microtime(true) - $rowStartTime) * 1000;
+                $remainingSleep = $this->targetIntervalMs - $elapsedMs;
+
+                if ($remainingSleep > 0) {
+                    usleep($remainingSleep * 1000);
+                }
+            }
+
+            // HEARTBEAT
             if ($uncommittedProcessed >= $this->heartbeat) {
                 $instance->increment('processed_records', $uncommittedProcessed);
-                $instance->refresh();
-                $uncommittedProcessed = 0; // Reset the heartbeat counter
+                $uncommittedProcessed = 0;
             }
-            usleep(10000); // Sleep 10ms to prevent hammering the DB in tight loops
         }
 
         if ($successFile) {
@@ -140,25 +141,18 @@ class ProcessBatchChunk implements ShouldQueue
             fclose($failedFile);
         }
 
-        // FINAL SYNC
+        // Final increments
         if ($uncommittedProcessed > 0) {
             $instance->increment('processed_records', $uncommittedProcessed);
         }
-
-        // Atomic increment for success/failed
         $instance->increment('success_records', $localSuccess);
         $instance->increment('failed_records', $localFailed);
 
+        // Finalize if last chunk
         $instance->refresh();
         if ($instance->processed_records >= $instance->total_records) {
-            (new \App\Modules\Connectors\Services\BatchOrchestrator())
-                ->finalize($instance, 'completed', $this->traceId);
+            (new \App\Modules\Connectors\Services\BatchOrchestrator())->finalize($instance, 'completed', $this->traceId);
         }
-
-        UapLogger::info('BatchEngine', 'CHUNK_PROCESS_COMPLETED', [
-            'instance_id' => $instance->id,
-            'chunk_total' => $localProcessed
-        ], $this->traceId);
     }
 
     /**

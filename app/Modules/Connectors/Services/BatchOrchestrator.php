@@ -15,27 +15,51 @@ use Exception;
 class BatchOrchestrator
 {
     /**
-     * Entry point for executing a batch job instance.
+     * Entry point for executing a batch job instance with dynamic scaling.
      */
-    /**
-         * Entry point for executing a batch job instance.
-         */
     public function execute(JobInstance $instance, ?string $traceId = null): void
     {
-        $instance->load('template.command');
+        $instance->load('template.command', 'template.providerInstance');
         $command = $instance->template->command;
+        $provider = $instance->template->providerInstance;
 
-        if (!$command) {
-            throw new \Exception("Batch template is not linked to a valid Command Blueprint.");
+        if (!$command || !$provider) {
+            throw new \Exception("Batch template is missing Command or Provider Instance.");
         }
 
-        UapLogger::info('BatchEngine', 'JOB_STARTED', [
+        // --- DYNAMIC DIMENSIONING LOGIC ---
+        $tpsLimit = $provider->tps_limit ?? 50;
+        $latency  = max($provider->latency_ms, 50); // Floor at 50ms to prevent div by zero
+        $health   = $provider->health_score ?? 100;
+
+        // 1. Calculate how many requests one worker can do per second
+        $reqPerWorkerPerSec = 1000 / $latency;
+
+        // 2. Adjust TPS Limit based on Health Score (Safety Brake)
+        // If health is below 80, we throttle the allowed TPS to 60% of capacity
+        if ($health < 80) {
+            $tpsLimit = $tpsLimit * 0.6;
+        }
+
+        // 3. Determine Concurrency & Throttling Delay
+        // We aim to utilize Horizon workers efficiently without exceeding TPS
+        // delay_ms = (1000 / (Target TPS / Number of Workers)) - Latency
+        // For simplicity in the worker, we calculate the Target Interval per request
+        $targetIntervalMs = 1000 / $tpsLimit;
+
+        // 4. Determine Chunk Size & Heartbeat
+        // If latency is high (>1s), use small chunks to avoid Horizon timeouts
+        $chunkSize = ($latency > 1000) ? 20 : 100;
+        $heartbeat = ($tpsLimit > 100) ? 50 : 10; // Frequent updates for slow jobs, less for fast ones
+        // ----------------------------------
+
+        UapLogger::info('BatchEngine', 'JOB_STARTED_WITH_DYNAMIC_SCALING', [
             'instance_id' => $instance->id,
-            'template_id' => $instance->job_template_id,
-            'command_id'  => $command->id,
+            'tps_target'  => $tpsLimit,
+            'latency'     => $latency . 'ms',
+            'chunk_size'  => $chunkSize
         ], $traceId);
 
-        // 1. Set status to 'processing' and mark the start time
         $instance->update([
             'status'     => 'processing',
             'started_at' => now()
@@ -49,67 +73,43 @@ class BatchOrchestrator
             $headers = $this->getCsvHeaders($dir);
             $this->initializeResultFiles($dir, $headers);
 
-            // --- NEW DYNAMIC STRATEGY ---
-            $totalRows = $instance->total_records;
-            $chunkSize = $this->calculateDynamicChunkSize($totalRows);
-            $heartbeat = $this->calculateDynamicHeartbeat($totalRows);
-            // ----------------------------
-
             $reader = Reader::createFromPath(Storage::path("{$dir}/source.csv"), 'r');
             $reader->setHeaderOffset(0);
 
             $jobs = [];
-            $chunk = [];
+            $currentChunk = [];
 
             foreach ($reader->getRecords() as $record) {
-                $chunk[] = $record;
+                $currentChunk[] = $record;
 
-                if (count($chunk) === $chunkSize) {
-                    // Pass the dynamic heartbeat to the Job
-                    $jobs[] = new ProcessBatchChunk($instance, $chunk, $command->id, $traceId, $heartbeat);
-                    $chunk = [];
+                if (count($currentChunk) === $chunkSize) {
+                    $jobs[] = new ProcessBatchChunk(
+                        $instance,
+                        $currentChunk,
+                        $command->id,
+                        $traceId,
+                        $heartbeat,
+                        (int) $targetIntervalMs // Pass target pace to worker
+                    );
+                    $currentChunk = [];
                 }
             }
 
-            if (!empty($chunk)) {
-                $jobs[] = new ProcessBatchChunk($instance, $chunk, $command->id, $traceId, $heartbeat);
+            if (!empty($currentChunk)) {
+                $jobs[] = new ProcessBatchChunk($instance, $currentChunk, $command->id, $traceId, $heartbeat, (int) $targetIntervalMs);
             }
 
-            // Use a Bus Batch for Horizon to monitor
-            $batch = Bus::batch($jobs)
+            Bus::batch($jobs)
                 ->then(function ($batch) use ($instance, $traceId) {
                     (new BatchOrchestrator())->finalize($instance, 'completed', $traceId);
                 })
-                ->catch(function ($batch, Throwable $e) use ($instance, $traceId) {
-                    // This fires as soon as the FIRST chunk fails.
-                    // We log it, but we don't kill the status yet because others are still running.
-                    UapLogger::warning('BatchEngine', 'CHUNK_FAILURE_DETECTED', [
-                        'instance_id' => $instance->id,
-                        'error' => $e->getMessage()
-                    ], $traceId);
-                })
-                ->finally(function ($batch) use ($instance, $traceId) {
-                    $instance->refresh();
-                    if ($instance->status !== 'completed') {
-                        (new BatchOrchestrator())->finalize($instance, 'completed', $traceId);
-                    }
-                })
-                ->allowFailures() // Ensures one bad chunk doesn't stop the 400k run
+                ->allowFailures()
                 ->name("Batch-{$instance->id}")
                 ->dispatch();
 
         } catch (Throwable $e) {
-            // Handle immediate errors (e.g. file system errors, validation errors)
-            $instance->update([
-                'status'       => 'failed',
-                'completed_at' => now()
-            ]);
-
-            UapLogger::error('BatchEngine', 'JOB_INITIALIZATION_FAILED', [
-                'instance_id' => $instance->id,
-                'error'       => $e->getMessage()
-            ], $traceId);
-
+            $instance->update(['status' => 'failed', 'completed_at' => now()]);
+            UapLogger::error('BatchEngine', 'JOB_INIT_FAILED', ['error' => $e->getMessage()], $traceId);
             throw $e;
         }
     }
