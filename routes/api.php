@@ -12,6 +12,7 @@ use App\Modules\Core\Dashboard\Controllers\DashboardController;
 use App\Modules\Core\Auditing\Controllers\AuditLogController;
 use App\Modules\Connectors\Controllers\CommandController;
 use App\Modules\Connectors\Controllers\ProviderCategoryController;
+use App\Modules\LeapLogs\Http\Controllers\LogParserController;
 
 /*
 |--------------------------------------------------------------------------
@@ -162,13 +163,17 @@ Route::middleware('auth:api')->group(function () {
             Route::get('/recent-activities', [DashboardController::class, 'getRecentActivities']);
         });
 
-
         Route::group(['prefix' => 'audit-logs'], function () {
             Route::get('/', [AuditLogController::class, 'index']);
             Route::get('/trace/{traceId}', [AuditLogController::class, 'showTrace']);
             Route::get('/stats/connectivity', [AuditLogController::class, 'connectivityStats']);
             Route::get('/security', [AuditLogController::class, 'securityLogs']);
             Route::get('/export', [AuditLogController::class, 'export']);
+        });
+
+        Route::group(['prefix' => 'leap-logs'], function () {
+            // Main endpoint for parsing pasted text or uploaded files
+            Route::post('parse', [LogParserController::class, 'parse']);
         });
     });
 });

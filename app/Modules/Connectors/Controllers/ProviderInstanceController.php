@@ -72,9 +72,12 @@ class ProviderInstanceController extends Controller implements HasMiddleware
             'connection_settings.port' => 'required|integer',
             'connection_settings.username' => 'required|string',
             'connection_settings.password' => 'required|string',
-            'connection_settings.user_agent' => 'nullable|string|max:255', // Added User Agent
+            'connection_settings.user_agent' => 'nullable|string|max:255',
+            'connection_settings.tps_limit' => 'nullable|integer|min:1',
         ]);
         $validated['is_active'] = false;
+        $validated['health_score'] = 100;
+        $validated['tps_limit'] = $validated['connection_settings']['tps_limit'] ?? 10;
         $instance = ProviderInstance::create($validated);
 
         \App\Modules\Core\Auditing\Services\UapLogger::info('SystemAudit', 'PROVIDER_INSTANCE_CREATED', [
@@ -127,8 +130,10 @@ class ProviderInstanceController extends Controller implements HasMiddleware
             'connection_settings.port' => 'sometimes|integer',
             'connection_settings.username' => 'sometimes|string',
             'connection_settings.password' => 'sometimes|string',
-            'connection_settings.user_agent' => 'nullable|string|max:255', // Added User Agent
+            'connection_settings.user_agent' => 'nullable|string|max:255',
+            'connection_settings.tps_limit' => 'nullable|integer|min:1',
         ]);
+        $validated['tps_limit'] = $validated['connection_settings']['tps_limit'] ?? $instance->tps_limit ?? 10;
 
         $instance->update($validated);
 

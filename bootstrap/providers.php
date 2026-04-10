@@ -6,4 +6,5 @@ return [
     App\Providers\HorizonServiceProvider::class,
     App\Providers\TelescopeServiceProvider::class,
     PHPOpenSourceSaver\JWTAuth\Providers\LaravelServiceProvider::class,
+    App\Modules\LeapLogs\Providers\LeapLogsServiceProvider::class,
 ];
