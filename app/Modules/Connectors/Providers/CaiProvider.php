@@ -61,19 +61,26 @@ class CaiProvider extends BaseProvider
         }
     }
 
-    // app/Modules/Connectors/Providers/CaiProvider.php
-
+    /**
+     * Overrides BaseProvider to handle MML string construction
+     * from the database sample payload.
+     */
     protected function buildPayload(array $commandDef, array $params): string
     {
-        // prefix is usually the command keyword (e.g., SET, GET)
-        $parts = [$commandDef['prefix']];
+        $payload = $commandDef['request_payload'] ?? '';
 
-        foreach ($params as $key => $val) {
-            // CAI usually expects parameters as KEY,VALUE
-            $parts[] = "{$key},{$val}";
+        if (empty($payload)) {
+            throw new Exception("No MML payload template found in the command definition.");
         }
 
-        return implode(':', $parts) . ';';
+        foreach ($params as $key => $value) {
+            $pattern = "/\b" . preg_quote($key, '/') . ",[^:;]*/";
+            $replacement = $key . "," . $value;
+
+            $payload = preg_replace($pattern, $replacement, $payload);
+        }
+
+        return rtrim(trim($payload), ';') . ';';
     }
 
     public function parseResponse(array $commandDef, string $rawResponse, array $userParams): array
@@ -122,17 +129,29 @@ class CaiProvider extends BaseProvider
      */
     private function parseCaiData(string $raw): array
     {
-        $data = [];
-        $parts = explode(':', $raw);
+        \Log::debug("Parsing CAI Response Data", ['raw' => $raw]);
 
-        foreach ($parts as $part) {
+        $data = [];
+
+        $clean = rtrim(trim($raw), ';');
+
+        $parts = explode(':', $clean);
+
+        foreach ($parts as $index => $part) {
             if (str_contains($part, ',')) {
-                $keyValue = explode(',', $part);
-                if (count($keyValue) >= 2) {
-                    $data[$keyValue[0]] = $keyValue[1];
+                [$key, $value] = explode(',', $part, 2);
+                $data[trim($key)] = trim($value);
+            } else {
+                if ($index === 0) {
+                    $data['COMMAND'] = $part;
+                } else {
+                    $data['STATUS'] = $part;
                 }
             }
         }
+
+        \Log::debug("Parsed CAI Data", ['parsed' => $data]);
+
         return $data;
     }
 
@@ -147,6 +166,54 @@ class CaiProvider extends BaseProvider
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+        * Generates a mapping blueprint by parsing the MML sample payload.
+        * Unlike UCIP, CAI/MML is flat, so all parameters are Level 0.
+    */
+    public function getMappingBlueprint(string $rawSample): array
+    {
+        $blueprint = [];
+
+        if (empty($rawSample)) {
+            return $blueprint;
+        }
+
+        // 1. Parse: "SET:HLRSUB:MSISDN,242064678080:MCA,0"
+        $parsed = $this->parseSamplePayload($rawSample);
+        $params = $parsed['params'] ?? [];
+
+        // 2. Build flat blueprint
+        foreach ($params as $key => $sampleValue) {
+            $blueprint[] = [
+                'key'         => $key,
+                'type'        => $this->inferMmlType($sampleValue),
+                'level'       => 0,
+                'isParent'    => false,
+                'is_required' => true,
+                'value'       => $sampleValue, // This is what the user sees in the form as a guide
+            ];
+        }
+
+        return $blueprint;
+    }
+
+    /**
+     * Helper to guess the type from the MML string value.
+     */
+    protected function inferMmlType(mixed $value): string
+    {
+        if (is_numeric($value)) {
+            return str_contains((string)$value, '.') ? 'Double' : 'Integer';
+        }
+
+        $upperVal = strtoupper((string)$value);
+        if (in_array($upperVal, ['TRUE', 'FALSE', 'YES', 'NO', 'ON', 'OFF'])) {
+            return 'Boolean';
+        }
+
+        return 'String';
     }
 
 
@@ -194,4 +261,6 @@ class CaiProvider extends BaseProvider
         }
         return null;
     }
+
+
 }

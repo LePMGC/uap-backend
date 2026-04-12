@@ -115,7 +115,24 @@ class BlueprintService
 
     public function getCategoryBlueprint(string $slug): ?array
     {
-        return config("blueprints.{$slug}");
+        // 1. Load the base protocol config from the file
+        $config = config("blueprints.{$slug}");
+
+        if (!$config) {
+            return null;
+        }
+
+        // 2. Fetch ALL commands for this category from the Database
+        // We use keyBy('command_key') so the Provider can access them via $this->blueprint['commands']['SET']
+        $dbCommands = Command::where('category_slug', $slug)
+            ->get()
+            ->keyBy('command_key')
+            ->toArray();
+
+        // 3. Inject the DB commands into the config array
+        $config['commands'] = $dbCommands;
+
+        return $config;
     }
 
 

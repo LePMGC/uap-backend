@@ -505,7 +505,7 @@ class UcipProvider extends BaseProvider
                     'level' => $level,
                     'isParent' => false,
                     'is_required' => true,
-                    'value' => $sampleValue // <--- Added the property value here
+                    'value' => $sampleValue
                 ];
             }
         }

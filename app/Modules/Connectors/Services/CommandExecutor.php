@@ -51,14 +51,16 @@ class CommandExecutor
                 $injectedRaw = $provider->injectSystemParams($userInput);
                 $result = $provider->executeRaw($command->command_key, $injectedRaw);
 
-                $requestData = ['mode' => 'raw']; // No structured data in raw mode
+                $requestData = ['mode' => 'raw'];
                 $requestRaw = $result['request_raw'];
                 $response = $result['response'];
             } else {
-                $payloadData = $this->preparePayload($command, $userInput, $instance);
-                $result = $provider->execute($command->command_key, is_array($userInput) ? $userInput : []);
+                // 1. We keep userInput (the JSON object) for the 'data' field in the log
+                $requestData = is_array($userInput) ? $userInput : [];
 
-                $requestData = $payloadData;
+                // 2. We pass the userInput to the provider to build the actual protocol string
+                $result = $provider->execute($command->command_key, $requestData);
+
                 $requestRaw = $result['request_raw'];
                 $response = $result['response'];
             }

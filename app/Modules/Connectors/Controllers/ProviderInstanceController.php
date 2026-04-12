@@ -171,10 +171,11 @@ class ProviderInstanceController extends Controller implements HasMiddleware
         }
 
         try {
-            $blueprint = config("providers.{$instance->category_slug}");
+            $bluePrintService = new BlueprintService();
+            $blueprint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
 
             if (!$blueprint) {
-                return response()->json(['message' => 'Blueprint configuration not found for this category'], 500);
+                return response()->json(['message' => 'Blueprint configuration not found for this category, '. $instance->category_slug], 500);
             }
 
             $provider = ProviderFactory::make($instance->connection_settings, $blueprint);
