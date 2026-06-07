@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Str;
 use App\Modules\Core\UserManagement\Services\UserService;
+use Illuminate\Routing\Controllers\Middleware;
 
 class AuthController extends Controller
 {
@@ -23,6 +24,14 @@ class AuthController extends Controller
     public static function middleware(): array
     {
         return [
+            // Protect everything except login with token authentication
+            new Middleware('auth:api', except: ['login']),
+
+            // Optional: If you want explicit permission handling for profile password changes
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('change_own_password'),
+                only: ['changePassword']
+            ),
         ];
     }
 
@@ -54,7 +63,7 @@ class AuthController extends Controller
                 'username'     => $credentials['username'],
                 'name'         => ucwords(str_replace(['.', '_'], ' ', $credentials['username'])),
                 'phone_number' => 'LDAP_PROVISIONED',
-                'password'     => Hash::make(\Illuminate\Support\Str::random(32)), 
+                'password'     => Hash::make(\Illuminate\Support\Str::random(32)),
                 'must_change_password' => false, // LDAP users don't use local password reset flow
             ]);
 
@@ -64,7 +73,7 @@ class AuthController extends Controller
                 'source' => 'LDAP_SERVER'
             ]);
 
-            $user->assignRole('operator'); 
+            $user->assignRole('operator');
         }
 
         // 3. Blocked Status Check
@@ -87,17 +96,17 @@ class AuthController extends Controller
 
         return response()->json([
             'access_token'  => $token,
-            /** * RESTORED: Refresh token is required for the FE 
-             * to stay logged in beyond the access token TTL 
+            /** * RESTORED: Refresh token is required for the FE
+             * to stay logged in beyond the access token TTL
              */
-            'refresh_token' => auth('api')->refresh(), 
+            'refresh_token' => auth('api')->refresh(),
             'token_type'    => 'bearer',
             'expires_in'    => auth('api')->factory()->getTTL() * 60,
-            
+
             // Security Flags
             'must_change_password' => ($isLocalMode && $user->must_change_password),
             'auth_mode'            => config('auth.uap_mode'),
-            
+
             // User Context
             'user' => [
                 'username' => $user->username,
@@ -124,13 +133,13 @@ class AuthController extends Controller
             // we return the same token or a dedicated long-lived one.
             // For testing, let's just return the token itself as the refresh marker
             // or a manual refresh if your JWT provider supports dedicated refresh TTLs.
-            'refresh_token' => $token, 
+            'refresh_token' => $token,
             'token_type'    => 'bearer',
             'expires_in'    => auth('api')->factory()->getTTL() * 60,
-            
+
             'must_change_password' => ($isLocalMode && $user->must_change_password),
             'auth_mode'            => config('auth.uap_mode'),
-            
+
             'user' => [
                 'username' => $user->username,
                 'name'     => $user->name,
@@ -155,7 +164,7 @@ class AuthController extends Controller
     public function logout()
     {
         $user = auth('api')->user();
-        
+
         UapLogger::info('Security', 'USER_LOGOUT', [
             'username' => $user->username ?? 'Unknown',
         ]);

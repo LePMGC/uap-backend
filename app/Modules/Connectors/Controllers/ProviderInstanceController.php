@@ -22,18 +22,50 @@ class ProviderInstanceController extends Controller implements HasMiddleware
     }
 
 
+    /**
+     * Set up middleware for the controller.
+     */
     public static function middleware(): array
     {
         return [
+            // Absolute baseline requirement: User must provide a valid API token
             new Middleware('auth:api'),
-            // Only allow viewing if they have 'view_providers'
-            new Middleware('permission:view_providers', only: ['index', 'show']),
-            // Only allow management if they have 'manage_providers' (or specific ones)
-            new Middleware('permission:create_providers', only: ['store']),
-            new Middleware('permission:edit_providers', only: ['update']),
-            new Middleware('permission:delete_providers', only: ['destroy']),
-            new Middleware('permission:test_connectivity', only: ['manualPing']),
-            new Middleware('permission:view_providers', only: ['getCommands', 'getCategories']),
+
+            // 1. Structural Read and Telemetry Navigation Scopes
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_providers'),
+                only: ['index', 'show', 'getCategories', 'getAllByCategory']
+            ),
+
+            // 2. Execution-Wizard Mapping Queries (Grabs commands compatible with a given node)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('get_instance_commands'),
+                only: ['getCommands']
+            ),
+
+            // 3. Configuration Provisioning Scopes
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('create_providers'),
+                only: ['store']
+            ),
+
+            // 4. Mutation and Active Status Tuning
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('edit_providers'),
+                only: ['update']
+            ),
+
+            // 5. Hard Deletion / Removal of Gateways
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('delete_providers'),
+                only: ['destroy']
+            ),
+
+            // 6. Network Socket Dial Checks (Pre-save validation handshakes & explicit UI diagnostics)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('test_connectivity'),
+                only: ['manualPing', 'testConnection']
+            ),
         ];
     }
 

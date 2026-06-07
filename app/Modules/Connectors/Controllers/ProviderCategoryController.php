@@ -15,12 +15,26 @@ class ProviderCategoryController extends Controller implements HasMiddleware
     ) {
     }
 
+    /**
+     * Set up middleware for the controller.
+     */
     public static function middleware(): array
     {
         return [
+            // Absolute baseline requirement: User must provide a valid API token
             new Middleware('auth:api'),
-            new Middleware('permission:view_provider_categories', only: ['index']),
-            new Middleware('permission:view_command_blueprints', only: ['blueprints', 'showBlueprint']),
+
+            // 1. Category and navigational tree listing permissions
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_provider_categories'),
+                only: ['index', 'tree']
+            ),
+
+            // 2. Structural metadata blueprints query rights (Command structures and contracts)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_command_blueprints'),
+                only: ['blueprints', 'showBlueprint']
+            ),
         ];
     }
 
@@ -62,7 +76,10 @@ class ProviderCategoryController extends Controller implements HasMiddleware
         return response()->json($details);
     }
 
-    public function tree(\Illuminate\Http\Request $request): \Illuminate\Http\JsonResponse
+    /**
+     * Get tree hierarchical representation of categories and commands for navigation.
+     */
+    public function tree(\Illuminate\Http\Request $request): JsonResponse
     {
         $search = $request->query('search');
         $tree = $this->blueprintService->getCommandTree($search);

@@ -45,7 +45,14 @@ class CommandExecutor
         try {
             $bluePrintService = new BlueprintService();
             $bluePrint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
-            $provider = ProviderFactory::make($instance->connection_settings, $bluePrint);
+            // Resolve dynamic operator identity
+            $operatorId = $this->resolveOperatorIdentifier($userId, $jobInstanceId);
+
+            // Inject it cleanly into connection settings array temporarily for this provider's lifecycle
+            $connectionSettings = $instance->connection_settings;
+            $connectionSettings['dynamic_operator_id'] = $operatorId;
+
+            $provider = ProviderFactory::make($connectionSettings, $bluePrint);
 
             if ($mode === 'raw' && is_string($userInput)) {
                 $injectedRaw = $provider->injectSystemParams($userInput);
@@ -148,5 +155,32 @@ class CommandExecutor
             };
         }
         return $resolved;
+    }
+
+    /**
+     * Determine the dynamic operator identity based on manual triggers or batch jobs.
+     */
+    protected function resolveOperatorIdentifier(?int $userId, ?string $jobInstanceId): string
+    {
+        // Case 1: Manual execution has a real user logged in
+        if ($userId && $userId > 0) {
+            $user = \App\Models\User::find($userId); // Adjust to your actual User model namespace
+            if ($user && !empty($user->username)) {
+                return strtoupper($user->username);
+            }
+        }
+
+        // Case 2: Automation/Scheduled Batch Job execution
+        if ($jobInstanceId) {
+            // Query your batch job tables to find the user who created it originally
+            // Example assumes relations: JobInstance -> belongsTo -> BatchJob -> belongsTo -> User
+            $instance = \App\Models\BatchJobInstance::where('identifier_id', $jobInstanceId)->first(); // Adjust class names
+            if ($instance && $instance->batchJob && $instance->batchJob->user) {
+                return strtoupper($instance->batchJob->user->username);
+            }
+        }
+
+        // Fallback default system fallback identity
+        return 'UAP_SYSTEM';
     }
 }

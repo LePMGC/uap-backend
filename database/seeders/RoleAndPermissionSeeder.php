@@ -14,54 +14,67 @@ class RoleAndPermissionSeeder extends Seeder
         // Reset cached roles and permissions
         app()[PermissionRegistrar::class]->forgetCachedPermissions();
 
-        // 1. Static System Permissions
+        // 1. Static System Permissions (Cleaned & Unique)
         $permissions = [
-            'view_roles', 'create_roles', 'edit_roles', 'delete_roles', 'assign_permissions', 'manage_users',
+            // IAM / User Management
+            'view_roles', 'create_roles', 'edit_roles', 'delete_roles', 'assign_permissions',
+            'view_users', 'create_users', 'edit_users', 'delete_users', 'reset_user_passwords',
+
+            // Integration Providers & Instances
             'view_providers', 'create_providers', 'edit_providers', 'delete_providers', 'test_connectivity',
             'view_instances', 'create_instances', 'edit_instances', 'delete_instances', 'ping_instances', 'get_instance_commands',
-            'view_datasources', 'create_datasources', 'edit_datasources', 'delete_datasources', 'test_datasources',
-            'execute_commands', 'execute_all_commands', // Added execute_all_commands for super-admins
-            'view_all_command_logs', 'view_own_command_logs',
 
-            // Template Management
-            'view_batch_templates', 
-            'create_batch_templates', 
-            'edit_batch_templates', 
-            'delete_batch_templates',
-            'discover_batch_headers', 
-            
-            // Execution & Monitoring
-            'run_batch_jobs',          
-            'view_batch_instances',    
-            'cancel_batch_instances',  
-            'download_batch_results',
-            'download_batch_report',
-              
-            
-            // Scheduling
-            'manage_batch_schedules', 
-
-            // 1. Audit & Observability Permissions
-            'view_audit_logs',
-            'view_security_logs',
-            'view_trace_timeline', 
-            'view_connectivity_stats',
-            'export_audit_logs', 
-
-            // 2. Command Metadata Management (The "Blueprints")
-            'view_commands', 
-            'manage_commands',
-
-            // Provider categories
+            // Database-driven Command Management (Blueprints)
+            'view_all_commands',
+            'view_own_commands',
+            'manage_all_commands',
+            'manage_own_commands',
             'view_provider_categories',
             'view_command_blueprints',
-            'manage_batch_templates',
+
+            // Datasources (External DBs for Batch Processing)
+            'view_datasources', 'create_datasources', 'edit_datasources', 'delete_datasources', 'test_datasources',
+
+            // Command Execution & Logging
+            'execute_commands',
+            'execute_all_commands',
+            'view_all_command_logs',
+            'view_own_command_logs',
+
+            // Template Management
+            'view_all_batch_templates',
+            'view_own_batch_templates',
+            'create_batch_templates',
+            'edit_batch_templates',
+            'delete_batch_templates',
+            'manage_all_batch_templates',
+            'manage_own_batch_templates',
+            'discover_batch_headers',
+
+            // Execution, Monitoring & Batch Lifecycle
+            'run_batch_jobs',
+            'view_all_batch_instances',
+            'view_own_batch_instances',
+            'cancel_batch_instances',
+            'download_batch_results',
+            'download_batch_report',
+
+            // Scheduling (Cron/Automated Executions)
+            'manage_batch_schedules',
+            'manage_own_batch_schedules', // Added for operator-level task scheduling
+
+            // Audit & Observability Logs
+            'view_audit_logs',
+            'view_security_logs',
+            'view_trace_timeline',
+            'view_connectivity_stats',
+            'export_audit_logs',
         ];
 
         // 2. Dynamic Command Action Permissions
-        // These are based on the 'action' key in your blueprints
-        $categories = ['ericsson-ucip', 'ericsson-cai'];
-        $actions = ['view', 'create', 'update', 'delete', 'run'];
+        // Aligned with the database-driven blueprint actions
+        $categories = ['ericsson-ucip', 'ericsson-cai', 'smpp'];
+        $actions = ['view', 'create', 'update', 'delete', 'run', 'get', 'set']; // Expanded actions
 
         foreach ($categories as $cat) {
             foreach ($actions as $action) {
@@ -69,7 +82,7 @@ class RoleAndPermissionSeeder extends Seeder
             }
         }
 
-        // Create all permissions
+        // Create all permissions safely
         foreach ($permissions as $permission) {
             Permission::firstOrCreate([
                 'name' => $permission,
@@ -82,43 +95,52 @@ class RoleAndPermissionSeeder extends Seeder
             'name' => 'admin',
             'guard_name' => 'api',
         ]);
-        
-        // Admins get all permissions including all category actions (create, update, delete, run)
         $admin->syncPermissions(Permission::where('guard_name', 'api')->get());
 
-        // 4. Create Operator Role & Sync LIMITED permissions
+        // 4. Create Operator Role & Sync Scoped Permissions
         $operator = Role::firstOrCreate([
             'name' => 'operator',
             'guard_name' => 'api',
         ]);
 
-        // Operators can execute commands generally, but only specific actions
         $operatorPermissions = [
-            'execute_commands',
-            'view_own_command_logs',
-            'get_instance_commands',
-            'ericsson-ucip.view',
-            'ericsson-cai.view',
-            'discover_batch_headers',
-            'view_batch_templates',
-            'run_batch_jobs',
-            'view_batch_instances',
-            'download_batch_results',
-            'download_batch_report',
-            'execute_commands',
+            // Core Identity Lookups
+            'view_users',
+            'view_roles',
             'view_provider_categories',
             'view_command_blueprints',
-            'manage_batch_templates',
-            
+            'get_instance_commands',
+
+            // Database Commands (Own Rights)
+            'view_own_commands',
+            'manage_own_commands',
+
+            // Single Execution Rights
+            'execute_commands',
             'view_own_command_logs',
-            
-            // New Observability Permissions for Operators
+
+            // Batch Jobs Ecosystem (Own Rights)
+            'discover_batch_headers',
+            'manage_own_batch_templates',
+            'view_own_batch_templates',
+            'run_batch_jobs',
+            'view_own_batch_instances',
+            'manage_own_batch_schedules',
+            'download_batch_results',
+            'download_batch_report',
+
+            // Protocol Level Operational Rights (Crucial Addition)
+            'ericsson-ucip.view',
+            'ericsson-ucip.run',
+            'ericsson-cai.view',
+            'ericsson-cai.run',
+            'ericsson-cai.get',
+            'ericsson-cai.set',
+
+            // Safe Troubleshooting Observability
             'view_audit_logs',
             'view_trace_timeline',
             'view_connectivity_stats',
-            
-            // New Command Permissions for Operators
-            'view_commands', // So they can see the forms to fill them out
         ];
 
         $operator->syncPermissions($operatorPermissions);

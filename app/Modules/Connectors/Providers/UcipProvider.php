@@ -38,6 +38,9 @@ class UcipProvider extends BaseProvider
             'originHostName'      => $this->config['host'] ?? 'UAP-Server',
             'originTransactionID' => $this->generateTransactionId(),
             'originTimeStamp'     => now()->format('Ymd\TH:i:s+0100'),
+            'originOperatorID'    => $this->config['dynamic_operator_id']
+                                 ?? $this->config['origin_operator_id']
+                                 ?? 'UAP_ADMIN',
         ];
 
         // 2. Filter the pool based on what is defined in the command
@@ -394,7 +397,9 @@ class UcipProvider extends BaseProvider
                 'originHostName'      => $this->config['host'] ?? 'UAP-Server',
                 'originTransactionID' => $this->generateTransactionId(),
                 'originTimeStamp'     => now()->format('Ymd\TH:i:s+0100'),
-                'originOperatorID'    => 'UAP_ADMIN',
+                'originOperatorID'    => $this->config['dynamic_operator_id']
+                                 ?? $this->config['origin_operator_id']
+                                 ?? 'UAP_ADMIN',
             ];
 
             $detectedSystemParams = [];

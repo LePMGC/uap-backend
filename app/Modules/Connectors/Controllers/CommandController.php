@@ -25,11 +25,20 @@ class CommandController extends Controller
     public static function middleware(): array
     {
         return [
-            // Any authenticated user with 'view_commands' can see the list and blueprints
-            new \Illuminate\Routing\Controllers\Middleware('permission:view_commands', only: ['index', 'show']),
+            // Absolute baseline requirement: User must provide a valid API token
+            new \Illuminate\Routing\Controllers\Middleware('auth:api'),
 
-            // Only technical leads/admins can manage the underlying blueprints
-            new \Illuminate\Routing\Controllers\Middleware('permission:manage_commands', only: ['store', 'update', 'destroy']),
+            // 1. Structural Management Rights (Admins or high-level managers editing global parameters)
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using(['manage_all_commands', 'manage_own_commands']),
+                only: ['store', 'update', 'destroy']
+            ),
+
+            // 2. Structural Query Rights (Viewing lists, blueprints, projection test sheets)
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using(['view_all_commands', 'view_own_commands']),
+                only: ['index', 'show', 'projectPayload']
+            ),
         ];
     }
 
@@ -39,9 +48,16 @@ class CommandController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        $user = auth()->user();
         $query = Command::query();
 
-        // 1. Apply existing filters
+        // Multi-tenant scope: If operator cannot view ALL commands, restrict query to items they authored
+        if (!$user->can('view_all_commands')) {
+            // Assumes your table schema tracks creator IDs. If it uses 'created_by' columns:
+            $query->where('created_by', $user->id);
+        }
+
+        // Apply existing filters
         if ($request->filled('search')) {
             $query->where(function ($q) use ($request) {
                 $q->where('name', 'ilike', '%' . $request->query('search') . '%')
@@ -57,10 +73,8 @@ class CommandController extends Controller
             $query->where('action', $request->action);
         }
 
-        // 2. Minimal/Dropdown Mode
+        // Minimal/Dropdown Mode
         if ($request->boolean('minimal')) {
-            // We use get() instead of paginate() because dropdowns
-            // usually need the full list to search locally.
             $commands = $query->orderBy('name', 'asc')
                               ->get(['id', 'name', 'command_key']);
 
@@ -70,7 +84,7 @@ class CommandController extends Controller
             ]);
         }
 
-        // 3. Standard Paginated Mode
+        // Standard Paginated Mode
         $perPage = $request->query('per_page', 15);
         $paginatedCommands = $query->orderBy('id', 'desc')->paginate($perPage);
 
@@ -78,19 +92,25 @@ class CommandController extends Controller
     }
 
     /**
-    * Display the specified command.
+     * Display the specified command.
      */
     public function show($id): JsonResponse
     {
         $command = Command::findOrFail($id);
+        $user = auth()->user();
 
-        // 1. Initialize Provider via Factory
+        // Enforce data tenancy security check
+        if (!$user->can('view_all_commands') && $command->created_by !== $user->id) {
+            abort(403, 'You do not have permission to access this command record.');
+        }
+
+        // Initialize Provider via Factory
         $provider = ProviderFactory::make([], $command->toArray());
 
-        // 2. Get the standard parsed data (contains parameters + system_params)
+        // Get the standard parsed data (contains parameters + system_params)
         $parsedData = $provider->parseSamplePayload($command->request_payload);
 
-        // 3. Generate the specific Mapping Blueprint (filtered for user inputs)
+        // Generate the specific Mapping Blueprint (filtered for user inputs)
         $blueprint = $provider->getMappingBlueprint($command->request_payload);
 
         $mergedParams = array_merge(
@@ -110,15 +130,11 @@ class CommandController extends Controller
             'is_custom'         => $command->is_custom,
             'created_at'        => $command->created_at,
             'updated_at'        => $command->updated_at,
-
-            // Values exactly as they are in your current response
             'parameters'        => $mergedParams,
             'meta'              => [
                 'method'       => $parsedData['method'] ?? $command->command_key,
                 'system_keys'  => array_keys($parsedData['system_params'] ?? [])
             ],
-
-            // The specific list for the Batch Job Mapping Wizard (Filtered)
             'mapping_blueprint' => $blueprint
         ]);
     }

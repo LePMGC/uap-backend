@@ -22,18 +22,48 @@ class UserController extends Controller
     public static function middleware(): array
     {
         return [
+            // Ensure the user is authenticated for ALL methods
             new Middleware('auth:api'),
-            new Middleware('permission:manage_users'),
+
+            // 1. Viewing endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_users'),
+                only: ['index', 'show']
+            ),
+
+            // 2. Creation endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('create_users'),
+                only: ['store']
+            ),
+
+            // 3. Modification / Administrative modifications
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('edit_users'),
+                only: ['update', 'block', 'unblock']
+            ),
+
+            // 4. Deletion endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('delete_users'),
+                only: ['destroy']
+            ),
+
+            // 5. Password resets
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('reset_user_passwords'),
+                only: ['resetPassword']
+            ),
         ];
     }
 
     public function index(Request $request): JsonResponse
     {
         $filters = $request->only([
-            'name', 
-            'username', 
-            'email', 
-            'phone_number', 
+            'name',
+            'username',
+            'email',
+            'phone_number',
             'per_page',
             'role',
             'status',
@@ -124,14 +154,14 @@ class UserController extends Controller
                 'message' => 'Password reset successful.',
                 'temporary_password' => $tempPassword
             ]);
-            
+
         } catch (\RuntimeException $e) {
             // Return 400 Bad Request or 403 Forbidden because the action is invalid for current config
             return response()->json([
                 'status' => 'error',
                 'message' => $e->getMessage()
             ], 400);
-            
+
         } catch (\Exception $e) {
             return response()->json([
                 'status' => 'error',

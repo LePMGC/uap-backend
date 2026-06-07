@@ -12,17 +12,44 @@ use Illuminate\Routing\Controllers\Middleware;
 
 class DataSourceController extends Controller implements HasMiddleware
 {
-
-   public static function middleware(): array
+    /**
+      * Set up middleware for the controller.
+      */
+    public static function middleware(): array
     {
         return [
+            // Absolute baseline requirement: User must provide a valid API token
             new Middleware('auth:api'),
-            new Middleware('permission:view_datasources', only: ['index', 'show']),
-            new Middleware('permission:create_datasources', only: ['store']),
-            new Middleware('permission:edit_datasources', only: ['update']),
-            new Middleware('permission:delete_datasources', only: ['destroy']),
-            new Middleware('permission:test_datasources', only: ['testConnection']),
-            new Middleware('permission:view_datasources', only: ['getTypes']),
+
+            // 1. Structural Query Rights (Viewing lists, details, and metadata types)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_datasources'),
+                only: ['index', 'show', 'getTypes']
+            ),
+
+            // 2. Creation endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('create_datasources'),
+                only: ['store']
+            ),
+
+            // 3. Modification / Active state configurations
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('edit_datasources'),
+                only: ['update']
+            ),
+
+            // 4. Deletion endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('delete_datasources'),
+                only: ['destroy']
+            ),
+
+            // 5. Explicit connection handshake tests (Critical system checks)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('test_datasources'),
+                only: ['testConnection']
+            ),
         ];
     }
 
@@ -115,7 +142,7 @@ class DataSourceController extends Controller implements HasMiddleware
         } catch (\Exception $e) {
             // This catches logic crashes, missing drivers, or syntax errors
             return response()->json([
-                'success' => false, 
+                'success' => false,
                 'message' => 'An internal error occurred during testing: ' . $e->getMessage()
             ], 500);
         }
@@ -180,9 +207,9 @@ class DataSourceController extends Controller implements HasMiddleware
             ], 404);
         }
 
-         \App\Modules\Core\Auditing\Services\UapLogger::error('SystemAudit', 'DATASOURCE_DELETED', [
-            'user_id' => auth()->id(),
-            'source_name' => $dataSource->name
+        \App\Modules\Core\Auditing\Services\UapLogger::error('SystemAudit', 'DATASOURCE_DELETED', [
+           'user_id' => auth()->id(),
+           'source_name' => $dataSource->name
         ], 'CRITICAL');
 
         $dataSource->delete();

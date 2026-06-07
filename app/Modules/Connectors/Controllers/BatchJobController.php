@@ -19,9 +19,12 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 use League\Csv\Writer;
 use SplTempFileObject;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 
 class BatchJobController extends Controller
 {
+    use AuthorizesRequests;
+
     public function __construct(
         protected BatchOrchestrator $orchestrator,
         protected BatchSchemaService $schemaService,
@@ -426,18 +429,16 @@ class BatchJobController extends Controller
     }
 
     /**
-     * Display the specific batch template details.
-     * GET /api/batch/templates/{id}
-    */
+        * Display the specific batch template details.
+     */
     public function showTemplate(string $id): \Illuminate\Http\JsonResponse
     {
-        // Eager load command and provider instance for the frontend details view
         $template = JobTemplate::with(['providerInstance', 'dataSource', 'user'])
             ->findOrFail($id);
 
-        // Security: Ensure users can only see their own templates unless they have global view permissions
+        // Explicit fallback: Allow if user has global rights, otherwise require explicit record ownership
         if (!auth()->user()->can('view_all_batch_templates') && $template->user_id !== auth()->id()) {
-            return response()->json(['message' => 'Unauthorized access to this template.'], 403);
+            abort(403, 'Unauthorized access to this template.');
         }
 
         return response()->json([

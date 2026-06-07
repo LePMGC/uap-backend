@@ -12,14 +12,19 @@ use App\Modules\Core\Dashboard\Services\HealthService;
 use App\Modules\Core\Dashboard\Services\ProviderHealthService;
 use App\Modules\Core\Dashboard\Services\DashboardStatsService;
 use App\Modules\Core\Dashboard\Services\ActivityService;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
 use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
-    protected $healthService, $providerHealthService, $statsService, $activityService;
+    protected $healthService;
+    protected $providerHealthService;
+    protected $statsService;
+    protected $activityService;
 
     public function __construct(
-        HealthService $healthService, 
+        HealthService $healthService,
         ProviderHealthService $providerHealthService,
         DashboardStatsService $statsService,
         ActivityService $activityService
@@ -30,9 +35,20 @@ class DashboardController extends Controller
         $this->activityService = $activityService;
     }
 
+    /**
+     * Set up middleware for the controller.
+     */
     public static function middleware(): array
     {
         return [
+            // Absolute baseline requirement: User must provide a valid API token
+            new \Illuminate\Routing\Controllers\Middleware('auth:api'),
+
+            // Restrict access to all dashboard operations (aggregates, platform metrics, feeds)
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_connectivity_stats'),
+                only: ['getStats', 'getPlatformHealth', 'getProvidersHealth', 'getRecentActivities']
+            ),
         ];
     }
 
@@ -68,7 +84,9 @@ class DashboardController extends Controller
 
     private function calculateChange($current, $prev): string
     {
-        if ($prev == 0) return '+0%';
+        if ($prev == 0) {
+            return '+0%';
+        }
         $diff = (($current - $prev) / $prev) * 100;
         return ($diff >= 0 ? '+' : '') . round($diff) . '%';
     }

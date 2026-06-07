@@ -103,11 +103,21 @@ class CommandLogController extends Controller implements HasMiddleware
         ]);
 
         try {
+            $user = auth()->user();
+
+            // FIX: Find the command model before evaluating permission attributes
+            $command = \App\Modules\Connectors\Models\Command::findOrFail($validated['command_id']);
+
+            // Validates database action permissions like "ericsson-cai.set" dynamically
+            if ($user->cannot("{$command->category_slug}.{$command->action}")) {
+                abort(403, "You do not have permission to run {$command->action} on this protocol.");
+            }
+
             $logEntry = $this->executor->execute(
                 $validated['instance_id'],
                 $validated['command_id'],
                 $validated['payload'],
-                auth()->id(),
+                $user->id,
                 null,
                 $request->header('X-Request-ID'),
                 $request->get('mode', 'form')

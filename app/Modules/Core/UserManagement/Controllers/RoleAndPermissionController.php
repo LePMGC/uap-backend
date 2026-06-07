@@ -18,13 +18,42 @@ class RoleAndPermissionController extends Controller
         $this->service = $service;
     }
 
+
     public static function middleware(): array
     {
         return [
-            new Middleware('permission:view_roles', only: ['index', 'listPermissions']),
-            new Middleware('permission:create_roles', only: ['store']),
-            new Middleware('permission:assign_permissions', only: ['updatePermissions']),
-            new Middleware('permission:delete_roles', only: ['destroy']),
+            // Absolute baseline requirement: User must provide a valid API token
+            new Middleware('auth:api'),
+
+            // 1. Viewing metadata / permissions maps
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_roles'),
+                only: ['index', 'show', 'listPermissions']
+            ),
+
+            // 2. Creation endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('create_roles'),
+                only: ['store']
+            ),
+
+            // 3. Modifying existing roles (Name edits, metadata adjustments)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('edit_roles'),
+                only: ['update']
+            ),
+
+            // 4. Modifying direct permission configurations (High critical operations)
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('assign_permissions'),
+                only: ['updatePermissions']
+            ),
+
+            // 5. Deletion endpoints
+            new Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('delete_roles'),
+                only: ['destroy']
+            ),
         ];
     }
 
@@ -49,7 +78,7 @@ class RoleAndPermissionController extends Controller
     {
         $request->validate(['permissions' => 'required|array']);
         $role = Role::findOrFail($id);
-        
+
         // LOG: Permission Escalation/Change
         \App\Modules\Core\Auditing\Services\UapLogger::info('Security', 'ROLE_PERMISSIONS_UPDATED', [
             'admin_id' => auth()->id(),
@@ -69,7 +98,7 @@ class RoleAndPermissionController extends Controller
 
             // 2. Prevent deletion of system-critical roles
             $protectedRoles = ['admin', 'operator'];
-            
+
             if (in_array(strtolower($role->name), $protectedRoles)) {
                 return response()->json([
                     'error' => "The '{$role->name}' role is a system default and cannot be removed."

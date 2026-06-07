@@ -7,29 +7,59 @@ use App\Modules\Core\Auditing\Services\LogParserService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
 
 class AuditLogController extends Controller
 {
     protected $parser;
 
-    public function __construct(LogParserService $parser) {
+    public function __construct(LogParserService $parser)
+    {
         $this->parser = $parser;
     }
 
     /**
      * Set up middleware for the controller.
      */
+    /**
+     * Set up middleware for the controller.
+     */
     public static function middleware(): array
     {
         return [
-            // General log viewing permissions
-            new \Illuminate\Routing\Controllers\Middleware('permission:view_audit_logs', only: ['index']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:view_trace_timeline', only: ['showTrace']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:view_connectivity_stats', only: ['connectivityStats']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:export_audit_logs', only: ['export']),
-            
-            // Restricted to users who can see sensitive security events
-            new \Illuminate\Routing\Controllers\Middleware('permission:view_security_logs', only: ['securityLogs']),
+            // Absolute baseline requirement: User must provide a valid API token
+            new \Illuminate\Routing\Controllers\Middleware('auth:api'),
+
+            // 1. General log viewing feed
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_audit_logs'),
+                only: ['index']
+            ),
+
+            // 2. Trace and end-to-end request timeline tracks
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_trace_timeline'),
+                only: ['showTrace']
+            ),
+
+            // 3. Provider/Instance latency and health diagnostic monitoring metrics
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_connectivity_stats'),
+                only: ['connectivityStats']
+            ),
+
+            // 4. File system export mechanisms (CSV streams)
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('export_audit_logs'),
+                only: ['export']
+            ),
+
+            // 5. Highly restricted security-sensitive modules tracking (Deactivations, JIT events)
+            new \Illuminate\Routing\Controllers\Middleware(
+                \Spatie\Permission\Middleware\PermissionMiddleware::using('view_security_logs'),
+                only: ['securityLogs']
+            ),
         ];
     }
 
@@ -64,7 +94,7 @@ class AuditLogController extends Controller
         // Use the manual pagination logic
         $perPage = $request->query('per_page', 15);
         $page = $request->query('page', 1);
-        
+
         $paginated = new \Illuminate\Pagination\LengthAwarePaginator(
             $logs->forPage($page, $perPage)->values(),
             $logs->count(),
@@ -86,21 +116,22 @@ class AuditLogController extends Controller
             ->where('trace_id', $traceId)
             ->sortBy('timestamp')
             ->values();
-            
+
         return response()->json(['data' => $logs]);
     }
 
 
     // 5. Log Export (CSV)
-    public function export(Request $request) {
+    public function export(Request $request)
+    {
         $logs = $this->parser->getFilteredLogs($request->all());
-        
+
         return new StreamedResponse(function () use ($logs) {
             $handle = fopen('php://output', 'w');
             fputcsv($handle, ['Timestamp', 'Module', 'Event', 'Status', 'User', 'TraceID', 'Details']);
             foreach ($logs as $log) {
                 fputcsv($handle, [
-                    $log['timestamp'], $log['module'], $log['event'], 
+                    $log['timestamp'], $log['module'], $log['event'],
                     $log['status'], $log['user'], $log['trace_id'], json_encode($log['details'])
                 ]);
             }
