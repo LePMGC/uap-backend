@@ -136,7 +136,11 @@ class BlueprintService
     }
 
 
-    public function getCommandTree(?string $search = null): array
+    /**
+         * Get tree hierarchical representation of categories and commands for navigation.
+        * Filtered dynamically by active user execution permissions.
+    */
+    public function getCommandTree(?string $search = null, \App\Modules\Core\UserManagement\Models\User $user): array
     {
         $blueprints = config('blueprints');
 
@@ -154,7 +158,7 @@ class BlueprintService
             if ($search) {
                 $searchTerm = strtolower($search);
 
-                // If the category slug itself matches the search, we show all commands in it.
+                // If the category slug itself matches the search, we show commands in it.
                 // Otherwise, we filter by name or command_key.
                 if (!str_contains(strtolower($slug), $searchTerm)) {
                     $query->where(function ($q) use ($searchTerm) {
@@ -164,9 +168,15 @@ class BlueprintService
                 }
             }
 
-            $commands = $query->get();
+            // 3. Fetch data and filter out nodes based on Spatie policy rights
+            $commands = $query->get()->filter(function ($cmd) use ($user) {
+                $permissionString = "{$cmd->category_slug}.{$cmd->action}";
 
-            // 3. Only add the category to the tree if it has commands matching the filter
+                // Keep the command only if the user has direct rights to execute this category's action verb
+                return $user->can($permissionString);
+            });
+
+            // 4. Only add the category to the tree if it contains accessible commands
             if ($commands->isNotEmpty()) {
                 $tree[] = [
                     'slug'     => $slug,
@@ -179,7 +189,7 @@ class BlueprintService
                             'action'        => $cmd->action ?? 'run',
                             'command_key'   => $cmd->command_key
                         ];
-                    })->toArray()
+                    })->values()->toArray() // Reset array indices after filtering
                 ];
             }
         }

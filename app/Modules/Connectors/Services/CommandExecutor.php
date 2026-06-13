@@ -164,7 +164,7 @@ class CommandExecutor
     {
         // Case 1: Manual execution has a real user logged in
         if ($userId && $userId > 0) {
-            $user = \App\Models\User::find($userId); // Adjust to your actual User model namespace
+            $user = \App\Modules\Core\UserManagement\Models\User::find($userId); // Adjust to your actual User model namespace
             if ($user && !empty($user->username)) {
                 return strtoupper($user->username);
             }

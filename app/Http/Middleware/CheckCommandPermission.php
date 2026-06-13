@@ -14,27 +14,50 @@ class CheckCommandPermission
      */
     public function handle(Request $request, Closure $next): Response
     {
-        // 1. Get the command_id from the request
+        $user = auth()->user();
+
+        // 1. Structural session sanity check
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        // 2. Extract and validate target command payload reference
         $commandId = $request->input('command_id');
 
         if (!$commandId) {
-            return response()->json(['message' => 'Command ID is required'], 400);
+            return response()->json(['message' => 'Command ID is required.'], 400);
         }
 
-        // 2. Fetch the command from the database
+        // 3. Hydrate the command blueprint matrix from database
         $command = Command::find($commandId);
 
         if (!$command) {
-            return response()->json(['message' => 'Command not found'], 404);
+            return response()->json(['message' => 'Target command metadata blueprint not found.'], 404);
         }
 
-        // 3. Check if the user has permission to execute this specific command key
-        // Permission pattern example: "execute_Refill" or "execute_InstallSubscriber"
-        $permission = 'execute_' . $command->command_key;
-
-        if (!auth()->user()->can($permission) && !auth()->user()->hasRole('admin')) {
+        // 4. STEP 1: Global single command execution envelope check
+        // User must possess at least one of these high-level execution wrappers
+        if (!$user->can('execute_all_commands') && !$user->can('execute_commands')) {
             return response()->json([
-                'message' => "You do not have permission to execute the command: {$command->name}"
+                'message' => 'You do not hold execution rights to run terminal commands on this platform.'
+            ], 403);
+        }
+
+        // 5. STEP 2: Custom blueprint isolation guard (Data multi-tenancy rule)
+        // If it's a custom saved template and they can't manage everything, verify they own the record
+        if ($command->is_custom && !$user->can('execute_all_commands') && $command->created_by !== $user->id) {
+            return response()->json([
+                'message' => 'Unauthorized access: You are not permitted to run custom templates authored by another engineer.'
+            ], 403);
+        }
+
+        // 6. STEP 3: Dynamic category protocol action enforcement
+        // Builds explicit string validation matching your seeders (e.g., "ericsson-ucip.run")
+        $protocolPermission = "{$command->category_slug}.{$command->action}";
+
+        if (!$user->can($protocolPermission)) {
+            return response()->json([
+                'message' => "Access Denied: Your profile lacks explicit action rights [{$command->action}] on the protocol schema [{$command->category_slug}]."
             ], 403);
         }
 

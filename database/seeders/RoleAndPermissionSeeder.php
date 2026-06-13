@@ -69,6 +69,9 @@ class RoleAndPermissionSeeder extends Seeder
             'view_trace_timeline',
             'view_connectivity_stats',
             'export_audit_logs',
+
+            // Authentication & Access Control
+            'change_own_password'
         ];
 
         // 2. Dynamic Command Action Permissions
@@ -141,6 +144,9 @@ class RoleAndPermissionSeeder extends Seeder
             'view_audit_logs',
             'view_trace_timeline',
             'view_connectivity_stats',
+
+            // Authentication & Access Control
+            'change_own_password'
         ];
 
         $operator->syncPermissions($operatorPermissions);

@@ -77,12 +77,16 @@ class ProviderCategoryController extends Controller implements HasMiddleware
     }
 
     /**
-     * Get tree hierarchical representation of categories and commands for navigation.
-     */
+        * Get tree hierarchical representation of categories and commands for navigation.
+    */
     public function tree(\Illuminate\Http\Request $request): JsonResponse
     {
         $search = $request->query('search');
-        $tree = $this->blueprintService->getCommandTree($search);
+        $user = auth()->user();
+
+        // Pass the authenticated operator instance down to check dynamic action verbs
+        $tree = $this->blueprintService->getCommandTree($search, $user);
+
         return response()->json($tree);
     }
 }

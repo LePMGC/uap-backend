@@ -43,8 +43,14 @@ class BatchJobController extends Controller
 
             // Viewing (Templates & History)
             new Middleware(
-                PermissionMiddleware::using('view_batch_templates|view_batch_instances'),
-                only: ['indexTemplates', 'indexInstances', 'getInstanceStatus', 'showTemplate', 'stats', 'getInstanceSummary']
+                PermissionMiddleware::using('view_all_batch_templates|view_own_batch_templates'),
+                only: ['indexTemplates', 'showTemplate', 'stats']
+            ),
+
+            // Viewing (Templates & History)
+            new Middleware(
+                PermissionMiddleware::using('view_all_batch_instances|view_own_batch_instances'),
+                only: ['indexInstances', 'getInstanceStatus', 'getInstanceSummary']
             ),
 
             // Creation
@@ -398,47 +404,64 @@ class BatchJobController extends Controller
 
 
     /**
-    * Display a listing of job templates with pagination and filtering.
-    */
+         * Display a listing of job templates with pagination and filtering.
+         * Isolate results dynamically based on view_all and view_own permission scopes.
+         */
     public function indexTemplates(Request $request): \Illuminate\Http\JsonResponse
     {
+        $user = auth()->user();
+
+        // 1. Enforce strict baseline permission check
+        if (!$user->can('view_all_batch_templates') && !$user->can('view_own_batch_templates')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to view batch templates.'
+            ], 403);
+        }
+
         $perPage = $request->query('per_page', 15);
         $search = $request->query('search');
 
         $query = JobTemplate::with(['dataSource', 'providerInstance', 'user:id,name,username'])
             ->latest();
 
-        // 1. Search Filter (Name or Description)
+        // 2. Search Filter (Name or Description)
         if ($search) {
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'ilike', "%{$search}%");
-                //->orWhere('description', 'ilike', "%{$search}%");
             });
         }
 
-        // 2. Permission-based Filtering
-        // If the user can't view all templates, only show their own
-        if (!auth()->user()->can('view_all_batch_templates')) {
-            $query->where('user_id', auth()->id());
+        // 3. Multi-Tenant Scoping
+        // If the user can't see all templates, scope the query exclusively to their own records
+        if (!$user->can('view_all_batch_templates')) {
+            $query->where('user_id', $user->id);
         }
 
         $templates = $query->paginate($perPage);
 
-        // We use appends to ensure the search term stays in the pagination links
         return response()->json($templates->appends($request->query()));
     }
 
     /**
-        * Display the specific batch template details.
+     * Display the specific batch template details.
      */
     public function showTemplate(string $id): \Illuminate\Http\JsonResponse
     {
+        $user = auth()->user();
+
+        // 1. Enforce baseline permission check
+        if (!$user->can('view_all_batch_templates') && !$user->can('view_own_batch_templates')) {
+            abort(403, 'You do not have permission to view batch template profiles.');
+        }
+
         $template = JobTemplate::with(['providerInstance', 'dataSource', 'user'])
             ->findOrFail($id);
 
-        // Explicit fallback: Allow if user has global rights, otherwise require explicit record ownership
-        if (!auth()->user()->can('view_all_batch_templates') && $template->user_id !== auth()->id()) {
-            abort(403, 'Unauthorized access to this template.');
+        // 2. Explicit Ownership Validation:
+        // Fail if they lack global sight rights AND the template does not belong to them
+        if (!$user->can('view_all_batch_templates') && $template->user_id !== $user->id) {
+            abort(403, 'Unauthorized access: You are not permitted to view this specific template configuration.');
         }
 
         return response()->json([
@@ -453,14 +476,29 @@ class BatchJobController extends Controller
      */
     public function indexInstancesForTemplate(string $id): \Illuminate\Http\JsonResponse
     {
-        $template = JobTemplate::findOrFail($id);
+        $user = auth()->user();
 
-        // Security check
-        if (!auth()->user()->can('view_all_batch_instances') && $template->user_id !== auth()->id()) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+        // 1. Enforce baseline operational tracking permission check
+        if (!$user->can('view_all_batch_instances') && !$user->can('view_own_batch_instances')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'You do not have permission to view batch processing execution logs.'
+            ], 403);
         }
 
-        // Get instances ordered by latest execution
+        // 2. Hydrate parent context from database
+        $template = JobTemplate::findOrFail($id);
+
+        // 3. Indirect Multi-Tenant Relationship Scoping
+        // If they can't look globally, they are strictly locked down to instances belonging to their own templates
+        if (!$user->can('view_all_batch_instances') && $template->user_id !== $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized access: You are not permitted to inspect execution run-logs for templates authored by other engineers.'
+            ], 403);
+        }
+
+        // 4. Extract nested processing tracking details ordered by latest execution timeline
         $instances = $template->instances()
             ->orderBy('created_at', 'desc')
             ->paginate(15);
