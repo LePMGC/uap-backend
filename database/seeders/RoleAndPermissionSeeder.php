@@ -71,7 +71,18 @@ class RoleAndPermissionSeeder extends Seeder
             'export_audit_logs',
 
             // Authentication & Access Control
-            'change_own_password'
+            'change_own_password',
+
+            // Reimbursements Management
+            'view_all_reimbursements',
+            'view_own_reimbursements',
+            'view_reimbursement_stats',
+            'create_single_reimbursement',
+            'create_bulk_reimbursements',
+            'approve_tier1_reimbursements',
+            'approve_tier2_reimbursements',
+            'approve_tier3_reimbursements',
+            'manage_reimbursement_settings',
         ];
 
         // 2. Dynamic Command Action Permissions
@@ -146,7 +157,13 @@ class RoleAndPermissionSeeder extends Seeder
             'view_connectivity_stats',
 
             // Authentication & Access Control
-            'change_own_password'
+            'change_own_password',
+
+            // Reimbursements Management
+            'view_own_reimbursements',
+            'create_single_reimbursement',
+            'create_bulk_reimbursements',
+            'approve_tier1_reimbursements',
         ];
 
         $operator->syncPermissions($operatorPermissions);

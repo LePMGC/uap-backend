@@ -175,5 +175,51 @@ Route::middleware('auth:api')->group(function () {
             // Main endpoint for parsing pasted text or uploaded files
             Route::post('parse', [LogParserController::class, 'parse']);
         });
+
+        /*
+        |--------------------------------------------------------------------------
+        | REIMBURSEMENT MANAGEMENT MODULE ROUTES
+        |--------------------------------------------------------------------------
+        */
+        Route::group(['prefix' => 'operations'], function () {
+
+            // 1. Core Reimbursement Tracking Ledger Endpoints
+            Route::group(['prefix' => 'reimbursements'], function () {
+
+                // Fetch paginated, filtered tracking rows (Protected by View scopes)
+                Route::get('/', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'index'])
+                    ->middleware('permission:view_all_reimbursements|view_own_reimbursements');
+
+                // Fetch unified module status execution overview metric charts
+                Route::get('/stats', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'stats'])
+                    ->middleware('permission:view_all_reimbursements|view_own_reimbursements');
+
+                // In-memory file processing and parsing checker configuration
+                Route::post('/validate-file', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'validateFile'])
+                    ->middleware('permission:create_bulk_reimbursements');
+
+                // Save single or bulk adjustments data records
+                Route::post('/', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'store'])
+                    ->middleware('permission:create_single_reimbursements|create_bulk_reimbursements');
+
+                // Profile Details / Diagnostic Logs Lookup
+                Route::get('/{id}', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'show'])
+                    ->middleware('permission:view_all_reimbursements|view_own_reimbursements');
+
+                // Supervisory Multi-Tier Authorization Hooks
+                Route::post('/{id}/approve', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'approve'])
+                    ->middleware('permission:approve_reimbursements');
+
+                Route::post('/{id}/reject', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'reject'])
+                    ->middleware('permission:approve_reimbursements');
+            });
+
+            // 2. Polymorphic Physical Verification Proof Upload Bridge Endpoints
+            Route::group(['prefix' => 'attachments'], function () {
+                // Endpoint mapping to uploadEvidenceAttachment(file) from frontend service
+                Route::post('/upload', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'uploadAttachment'])
+                    ->middleware('permission:create_single_reimbursements|create_bulk_reimbursements');
+            });
+        });
     });
 });

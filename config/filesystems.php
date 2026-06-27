@@ -60,6 +60,29 @@ return [
             'report' => false,
         ],
 
+        /**
+         * 1. Private Disk Layer: For high-security telecom batch input files.
+         * Stores lists of MSISDNs or MSISDN+Bundle sheets away from public access.
+         */
+        'secure_reimbursements' => [
+            'driver' => 'local',
+            'root' => storage_path('app/secure_reimbursements'),
+            'throw' => true, // Throws exception immediately if disk writes or permissions fail
+        ],
+
+        /**
+         * 2. Public Evidence Disk Layer: For physical validation proof attachments.
+         * Files are stored under storage/app/public/reimbursement_evidence and are
+         * exposed via standard web routes using the application symlink.
+         */
+        'reimbursement_attachments' => [
+            'driver' => 'local',
+            'root' => storage_path('app/public/reimbursement_evidence'),
+            'url' => env('APP_URL') . '/storage/reimbursement_evidence',
+            'visibility' => 'public',
+            'throw' => true,
+        ],
+
     ],
 
     /*
@@ -75,6 +98,8 @@ return [
 
     'links' => [
         public_path('storage') => storage_path('app/public'),
+        // Automatically bridges your specific attachments path to the public directory
+        public_path('storage/reimbursement_evidence') => storage_path('app/public/reimbursement_evidence'),
     ],
 
 ];
