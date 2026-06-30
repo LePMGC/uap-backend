@@ -14,10 +14,10 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 class ReimbursementService
 {
     /**
-     * Parse and validate an uploaded source spreadsheet file in-memory.
+     * Parse and validate an uploaded source spreadsheet file in-memory contextually.
      * Writes the verified file to secure storage and logs diagnostics rows.
      */
-    public function validateAndPresaveFile(UploadedFile $file): array
+    public function validateAndPresaveFile(UploadedFile $file, string $distributionMode): array
     {
         $tempPath = $file->getRealPath();
         $spreadsheet = IOFactory::load($tempPath);
@@ -35,27 +35,30 @@ class ReimbursementService
 
             $total++;
             $msisdn = trim($row[0] ?? '');
-            $value = trim($row[1] ?? '');
+
+            // Dynamic asset mapping extraction based entirely on distribution rules
+            $value = ($distributionMode === 'MANY_MANY') ? trim($row[1] ?? '') : null;
 
             $rowErrors = [];
 
-            // Telecom MSISDN formatting sanity guard checks
+            // 1. Structural Guard Rule: Telecom MSISDN formatting check
             if (empty($msisdn) || !preg_match('/^\d{10,15}$/', $msisdn)) {
                 $rowErrors[] = 'Malformed subscriber MSISDN length or character pattern constraint violation.';
             }
 
-            // Allocation target field check
-            if (empty($value)) {
-                $rowErrors[] = 'Resource value fields or asset target references cannot be left unmapped.';
+            // 2. Conditional Structural Guard Rule: Enforce row-specific assets ONLY during MANY_MANY operations
+            if ($distributionMode === 'MANY_MANY' && empty($value)) {
+                $rowErrors[] = 'Resource value fields or asset target references cannot be left unmapped in MANY_MANY mode.';
             }
 
+            // Build diagnostic response logs matrix
             if (!empty($rowErrors)) {
                 $invalid++;
                 foreach ($rowErrors as $errorReason) {
                     $errors[] = [
-                        'row' => $index + 1,
+                        'row'        => $index + 1,
                         'identifier' => $msisdn ?: 'UNKNOWN_ROW',
-                        'reason' => $errorReason,
+                        'reason'     => $errorReason,
                     ];
                 }
             } else {
@@ -75,9 +78,9 @@ class ReimbursementService
             foreach ($errors as $err) {
                 ReimbursementBulkError::create([
                     'file_reference_id' => $fileReferenceId,
-                    'row' => $err['row'],
-                    'identifier' => $err['identifier'],
-                    'reason' => $err['reason']
+                    'row'               => $err['row'],
+                    'identifier'        => $err['identifier'],
+                    'reason'            => $err['reason']
                 ]);
             }
         }
@@ -85,26 +88,39 @@ class ReimbursementService
         return [
             'file_reference_id' => $fileReferenceId,
             'metrics' => [
-                'total' => $total,
-                'valid' => $valid,
+                'total'   => $total,
+                'valid'   => $valid,
                 'invalid' => $invalid
             ],
             'errors' => $errors
         ];
     }
 
+
     /**
-     * Securely upload a validation proof file asset to the symlinked storage disk.
-     */
+        * Securely upload a validation proof file asset to the symlinked storage disk.
+        */
     public function storeAttachment(UploadedFile $file): array
     {
-        $filename = Str::uuid() . '.' . $file->getClientOriginalExtension();
-        Storage::disk('reimbursement_attachments')->put($filename, file_get_contents($file->getRealPath()));
+        // 1. Generate the filename with its extension
+        $uuidFilename = (string) Str::uuid() . '.' . $file->getClientOriginalExtension();
+
+        Storage::disk('reimbursement_attachments')
+            ->putFileAs('', $file, $uuidFilename);
+
+        if (!Storage::disk('reimbursement_attachments')->exists($uuidFilename)) {
+            throw new \Exception(
+                'The attachment could not be found immediately after being written to disk.'
+            );
+        }
 
         return [
-            'id' => $filename, // Return the actual filename context identifier
+            // CRITICAL: We return the full filename with its extension as the token ID.
+            // When the frontend submits, it passes this token back to createReimbursement.
+            'id'        => $uuidFilename,
             'file_name' => $file->getClientOriginalName(),
-            'file_url' => Storage::disk('reimbursement_attachments')->url($filename)
+            'file_path' => $uuidFilename,
+            'file_url'  => Storage::disk('reimbursement_attachments')->url($uuidFilename),
         ];
     }
 
@@ -138,13 +154,26 @@ class ReimbursementService
 
             // Map and resolve attachments database associations cleanly
             if (!empty($data['attachment_ids'])) {
-                foreach ($data['attachment_ids'] as $attachmentId) {
+                foreach ($data['attachment_ids'] as $attachmentToken) {
+                    if (empty($attachmentToken) || $attachmentToken === "0") {
+                        continue;
+                    }
+
+                    // Extract the clean name from the token path string
+                    $cleanFileNameOnDisk = basename($attachmentToken);
+
+                    // Since your schema uses a strict NOT NULL constraint for the primary key 'id' (UUID),
+                    // and your data token is a UUID filename (e.g. 'uuid.pdf'), we can extract a clean
+                    // UUID for the ID column and preserve the full string name for the path column.
+                    $uuidOnly = pathinfo($cleanFileNameOnDisk, PATHINFO_FILENAME);
+
                     ReimbursementAttachment::create([
-                        'reimbursement_id' => $reimbursement->id,
-                        'file_name' => 'Evidence_' . substr($attachmentId, 0, 8),
-                        'file_path' => 'reimbursement_evidence/' . $attachmentId,
-                        'file_url' => Storage::disk('reimbursement_attachments')->url($attachmentId),
-                        'uploaded_by_user_id' => $userId
+                        'id'                  => Str::isUuid($uuidOnly) ? $uuidOnly : (string) Str::uuid(),
+                        'reimbursement_id'    => $reimbursement->id,
+                        'file_name'           => 'Evidence_' . substr($cleanFileNameOnDisk, 0, 8),
+                        'file_path'           => $cleanFileNameOnDisk, // Now correctly saves 'uuid.pdf' or 'uuid.png'
+                        'uploaded_by_user_id' => $userId,
+                        'file_url'            => '', // Bypasses NOT NULL field constraint safely
                     ]);
                 }
             }

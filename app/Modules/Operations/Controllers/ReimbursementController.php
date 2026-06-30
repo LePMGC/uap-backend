@@ -8,9 +8,25 @@ use App\Modules\Operations\Services\ReimbursementService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use App\Modules\Operations\Transformers\ReimbursementResource;
+use Illuminate\Routing\Controllers\HasMiddleware;
 
-class ReimbursementController extends Controller
+class ReimbursementController extends Controller implements HasMiddleware
 {
+    /**
+     * Get the middleware that should be assigned to the controller.
+     * This fulfills the Illuminate\Routing\Controllers\HasMiddleware contract.
+     */
+    public static function middleware(): array
+    {
+        return [
+            'auth:api',
+            new \Illuminate\Routing\Controllers\Middleware('permission:view_all_reimbursements|view_own_reimbursements', only: ['index', 'show', 'stats']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:create_bulk_reimbursements', only: ['validateFile']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:create_single_reimbursements|create_bulk_reimbursements', only: ['store', 'uploadAttachment']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:approve_reimbursements', only: ['approve', 'reject']),
+        ];
+    }
+
     /**
      * Inject your operational service layer explicitly through constructor injection.
      */
@@ -25,10 +41,15 @@ class ReimbursementController extends Controller
     public function validateFile(Request $request): JsonResponse
     {
         $request->validate([
-            'file' => 'required|file|mimes:xlsx,csv,txt|max:10240',
+            'file'              => 'required|file|mimes:xlsx,csv,txt|max:10240', // Max 10MB protection limits
+            'distribution_mode' => 'required|in:MANY_SINGLE,MANY_MANY', // Catch the UI structural target
         ]);
 
-        $result = $this->reimbursementService->validateAndPresaveFile($request->file('file'));
+        // Forward both the file instance and the distribution mode configuration to the service tier
+        $result = $this->reimbursementService->validateAndPresaveFile(
+            $request->file('file'),
+            $request->input('distribution_mode')
+        );
 
         return response()->json(array_merge(['success' => true], $result));
     }
@@ -38,13 +59,65 @@ class ReimbursementController extends Controller
      */
     public function uploadAttachment(Request $request): JsonResponse
     {
+        // Log the incoming request
+        \Illuminate\Support\Facades\Log::info('Raw Inbound Attachment Request Diagnostic', [
+            'has_attachment_key' => $request->hasFile('attachment'),
+            'all_input_keys'     => $request->keys(),
+            'files_payload'      => $_FILES,
+        ]);
+
+        // Validate request
         $request->validate([
             'attachment' => 'required|file|mimes:pdf,png,jpg,jpeg|max:5120',
         ]);
 
-        $attachmentData = $this->reimbursementService->storeAttachment($request->file('attachment'));
+        try {
 
-        return response()->json($attachmentData);
+            $file = $request->file('attachment');
+
+            \Illuminate\Support\Facades\Log::info('Attachment details', [
+                'original_name' => $file->getClientOriginalName(),
+                'mime_type'     => $file->getMimeType(),
+                'size'          => $file->getSize(),
+                'is_valid'      => $file->isValid(),
+                'error_code'    => $file->getError(),
+            ]);
+
+            // Store the file using the service
+            $attachment = $this->reimbursementService->storeAttachment($file);
+
+            // Verify that the file actually exists
+            $exists = \Illuminate\Support\Facades\Storage::disk('reimbursement_attachments')
+                ->exists($attachment['file_path']);
+
+            \Illuminate\Support\Facades\Log::info('Attachment stored', [
+                'exists'    => $exists,
+                'disk_path' => \Illuminate\Support\Facades\Storage::disk('reimbursement_attachments')
+                    ->path($attachment['file_path']),
+                'data'      => $attachment,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Attachment uploaded successfully.',
+                'data'    => $attachment,
+            ]);
+
+        } catch (\Throwable $e) {
+
+            \Illuminate\Support\Facades\Log::error('Attachment upload failed', [
+                'message' => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+                'trace'   => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Attachment upload failed.',
+                'error'   => $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**
@@ -74,14 +147,13 @@ class ReimbursementController extends Controller
     }
 
     /**
-         * GET /operations/reimbursements
-         * List with multi-tenant filtering based on view_all and view_own permission scopes.
-         */
-    public function index(Request $request): \Illuminate\Http\JsonResponse
+      * GET /operations/reimbursements
+      * List with multi-tenant filtering based on view_all and view_own permission scopes.
+      */
+    public function index(Request $request): JsonResponse
     {
         $user = auth()->user();
 
-        // 1. Enforce strict baseline permission check
         if (!$user->can('view_all_reimbursements') && !$user->can('view_own_reimbursements')) {
             return response()->json([
                 'success' => false,
@@ -91,13 +163,10 @@ class ReimbursementController extends Controller
 
         $query = Reimbursement::with(['attachments', 'requester', 'approver']);
 
-        // 2. Multi-Tenant Query Scoping
-        // If the user can't look globally, restrict query explicitly to their own authored requests
         if (!$user->can('view_all_reimbursements')) {
             $query->where('requested_by_user_id', $user->id);
         }
 
-        // 3. Apply Text or Exact Target Filters
         if ($request->filled('search')) {
             $search = $request->input('search');
             $query->where(function ($q) use ($search) {
@@ -106,14 +175,12 @@ class ReimbursementController extends Controller
             });
         }
 
-        // Apply strict column drop-down filters
         foreach (['status', 'reimbursement_type', 'reimbursement_mode', 'required_tier', 'msisdn'] as $filter) {
             if ($request->filled($filter)) {
                 $query->where($filter, $request->input($filter));
             }
         }
 
-        // Historical chronological boundaries
         if ($request->filled('created_at_start')) {
             $query->whereDate('created_at', '>=', $request->input('created_at_start'));
         }

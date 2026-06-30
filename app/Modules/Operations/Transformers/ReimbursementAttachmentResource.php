@@ -8,19 +8,16 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class ReimbursementAttachmentResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
-     * @return array<string, mixed>
+     * Transform the resource into an array payload format.
      */
     public function toArray(Request $request): array
     {
         return [
-            'id'                  => $this->id,
+            'id'                  => (string) $this->id,
             'file_name'           => $this->file_name,
-            'file_url'            => $this->file_url,
+            'file_url'            => $this->file_url, // This reads seamlessly from the updated getFileUrlAttribute()
             'uploaded_by_user_id' => $this->uploaded_by_user_id,
-            // Format timestamps into standardized ISO 8601 strings for frontend date parsing
-            'uploaded_at'         => $this->uploaded_at?->toIso8601String(),
+            'uploaded_at'         => $this->created_at?->toIso8601String(),
         ];
     }
 }
