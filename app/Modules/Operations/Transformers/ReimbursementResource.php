@@ -25,6 +25,9 @@ class ReimbursementResource extends JsonResource
             'amount'               => $this->amount !== null ? (float) $this->amount : null,
             'is_bulk'              => (bool) $this->is_bulk,
             'file_reference_id'    => $this->file_reference_id,
+            'input_file_url'       => $this->is_bulk && $this->file_reference_id
+                ? url("/api/operations/reimbursements/{$this->id}/download-input-file")
+                : null,
             'required_tier'        => (int) $this->required_tier,
             'status'               => $this->status,
 
@@ -33,6 +36,7 @@ class ReimbursementResource extends JsonResource
 
             // Correct native relation wrapper
             'attachments'          => ReimbursementAttachmentResource::collection($this->whenLoaded('attachments')),
+            'distribution_mode' => $this->distribution_mode,
 
             'requested_by_user_id' => $this->requested_by_user_id,
             'approved_by_user_id'  => $this->approved_by_user_id,

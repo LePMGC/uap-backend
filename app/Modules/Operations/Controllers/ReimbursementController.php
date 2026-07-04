@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use App\Modules\Operations\Transformers\ReimbursementResource;
 use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Support\Facades\Storage;
 
 class ReimbursementController extends Controller implements HasMiddleware
 {
@@ -135,7 +136,8 @@ class ReimbursementController extends Controller implements HasMiddleware
             'amount' => 'required_if:reimbursement_type,AIRTIME|nullable|numeric|min:0.01',
             'file_reference_id' => 'required_if:is_bulk,true|nullable|string',
             'description' => 'nullable|string',
-            'attachment_ids' => 'nullable|array'
+            'attachment_ids' => 'nullable|array',
+            'distribution_mode' => 'nullable|string|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY',
         ]);
 
         $reimbursement = $this->reimbursementService->createReimbursement(
@@ -298,5 +300,136 @@ class ReimbursementController extends Controller implements HasMiddleware
                 ]
             ]
         ]);
+    }
+
+
+    /**
+     * GET /operations/reimbursements/download-template
+     * Fetch template payload stream from backend based on structural constraints.
+     */
+    public function downloadTemplate(Request $request): \Symfony\Component\HttpFoundation\BinaryFileResponse|JsonResponse
+    {
+        $validated = $request->validate([
+            'distribution_mode' => 'required|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY',
+            'format'            => 'required|in:xlsx,csv,txt',
+        ]);
+
+        $mode = strtolower($validated['distribution_mode']);
+        $format = strtolower($validated['format']);
+
+        // Build the absolute path to the target file
+        $fileName = "reimbursement_{$mode}.{$format}";
+        $filePath = storage_path("app/private/templates/{$fileName}");
+
+        // Guard against missing files on the server disk
+        if (!file_exists($filePath)) {
+            return response()->json([
+                'success' => false,
+                'message' => "The requested template profile '{$fileName}' could not be located on the server system storage."
+            ], 404);
+        }
+
+        // Map appropriate content headers based on the requested format
+        $mimeTypes = [
+            'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'csv'  => 'text/csv',
+            'txt'  => 'text/plain',
+        ];
+
+        $headers = [
+            'Content-Type'        => $mimeTypes[$format] ?? 'application/octet-stream',
+            'Content-Disposition' => "attachment; filename=\"{$fileName}\"",
+        ];
+
+        // Stream the file back directly to the client as a binary payload chunk response
+        return response()->download($filePath, $fileName, $headers);
+    }
+
+
+    /**
+         * PUT /operations/reimbursements/{id}
+         * Safely modify text parameters and add/remove evidence documents.
+         */
+    public function update(Request $request, string $id): JsonResponse
+    {
+        $reimbursement = Reimbursement::findOrFail($id);
+
+        // Guard rule: Block modifications on already audited/processed entries
+        if ($reimbursement->status !== 'pending') {
+            return response()->json([
+                'success' => false,
+                'message' => 'This request instance cannot be modified because it is no longer pending review.'
+            ], 400);
+        }
+
+        $validated = $request->validate([
+            'ticket_id'          => 'required|string|max:50',
+            'description'        => 'nullable|string|max:255',
+            'reimbursement_type' => 'required|string|in:BUNDLE,AIRTIME',
+            'reimbursement_mode' => 'required|string|in:AUTO,MANUAL',
+            'target_product_id'  => 'nullable|string|required_if:reimbursement_type,BUNDLE',
+            'amount'             => 'nullable|numeric|required_if:reimbursement_type,AIRTIME',
+            'is_bulk'            => 'nullable|boolean',
+            'file_reference_id'  => 'nullable|string|max:100',
+            'attachment_ids'     => 'nullable|array',
+            'attachment_ids.*'   => 'required|string',
+            'distribution_mode' => 'nullable|string|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY'
+        ]);
+
+        $updatedRecord = $this->reimbursementService->updateReimbursement($reimbursement, $validated);
+
+        return response()->json([
+            'success' => true,
+            'data'    => new ReimbursementResource($updatedRecord)
+        ]);
+    }
+
+    /**
+         * GET /operations/reimbursements/{id}/download-input-file
+         * Stream the raw subscriber sheet in its actual native storage format.
+         */
+    public function downloadInputFile(string $id): \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
+    {
+        $reimbursement = Reimbursement::findOrFail($id);
+
+        if (!$reimbursement->is_bulk || !$reimbursement->file_reference_id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This reimbursement record is not a bulk transaction or does not contain an associated input file.'
+            ], 400);
+        }
+
+        // Get relative disk path (e.g., "uploaded_sheets/VLT-REF-XXXX.csv")
+        $relativeDiskPath = $reimbursement->getSecureDiskPath();
+
+        if (!$relativeDiskPath || !Storage::disk('secure_reimbursements')->exists($relativeDiskPath)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'The physical subscriber file could not be found on secure server storage.'
+            ], 404);
+        }
+
+        // Extract the exact native file extension directly from the storage path
+        $extension = strtolower(pathinfo($relativeDiskPath, PATHINFO_EXTENSION));
+        $absolutePath = Storage::disk('secure_reimbursements')->path($relativeDiskPath);
+
+        // Map real content headers matching the native format on disk
+        $mimeTypes = [
+            'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'csv'  => 'text/csv',
+            'txt'  => 'text/plain'
+        ];
+
+        // The dynamic file name sent to browser matching the true format
+        $downloadName = "subscriber_list_{$reimbursement->file_reference_id}.{$extension}";
+
+        $headers = [
+            'Content-Type'        => $mimeTypes[$extension] ?? 'application/octet-stream',
+            'Content-Disposition' => "attachment; filename=\"{$downloadName}\"",
+            'Pragma'              => 'no-cache',
+            'Cache-Control'       => 'must-revalidate, post-check=0, pre-check=0',
+        ];
+
+        return response()->download($absolutePath, $downloadName, $headers);
     }
 }

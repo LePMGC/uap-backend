@@ -83,6 +83,11 @@ return [
             'throw' => true,
         ],
 
+        'templates' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/templates'),
+            'throw' => false,
+        ],
     ],
 
     /*

@@ -23,7 +23,7 @@ class Reimbursement extends Model
         'ticket_id', 'msisdn', 'reimbursement_type', 'reimbursement_mode',
         'target_product_id', 'amount', 'is_bulk', 'file_reference_id',
         'required_tier', 'status', 'description', 'rejection_reason',
-        'requested_by_user_id', 'approved_by_user_id'
+        'requested_by_user_id', 'approved_by_user_id','distribution_mode'
     ];
 
     protected $casts = [

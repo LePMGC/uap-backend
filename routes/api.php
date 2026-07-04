@@ -13,6 +13,7 @@ use App\Modules\Core\Auditing\Controllers\AuditLogController;
 use App\Modules\Connectors\Controllers\CommandController;
 use App\Modules\Connectors\Controllers\ProviderCategoryController;
 use App\Modules\LeapLogs\Http\Controllers\LogParserController;
+use App\Modules\Operations\Controllers\ReimbursementController;
 
 /*
 |--------------------------------------------------------------------------
@@ -191,30 +192,37 @@ Route::middleware('auth:api')->group(function () {
             Route::group(['prefix' => 'reimbursements'], function () {
 
                 // Fetch paginated, filtered tracking rows (Protected by View scopes)
-                Route::get('/', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'index']);
+                Route::get('/', [ReimbursementController::class, 'index']);
+
+                Route::get('/download-template', [ReimbursementController::class, 'downloadTemplate']);
 
                 // Fetch unified module status execution overview metric charts
-                Route::get('/stats', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'stats']);
+                Route::get('/stats', [ReimbursementController::class, 'stats']);
 
                 // In-memory file processing and parsing checker configuration
-                Route::post('/validate-file', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'validateFile']);
+                Route::post('/validate-file', [ReimbursementController::class, 'validateFile']);
 
                 // Save single or bulk adjustments data records
-                Route::post('/', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'store']);
+                Route::post('/', [ReimbursementController::class, 'store']);
 
                 // Profile Details / Diagnostic Logs Lookup
-                Route::get('/{id}', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'show']);
+                Route::get('/{id}', [ReimbursementController::class, 'show']);
+
+                // Update existing reimbursement record (Protected by Edit scopes)
+                Route::put('/{id}', [ReimbursementController::class, 'update']);
 
                 // Supervisory Multi-Tier Authorization Hooks
-                Route::post('/{id}/approve', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'approve']);
+                Route::post('/{id}/approve', [ReimbursementController::class, 'approve']);
 
-                Route::post('/{id}/reject', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'reject']);
+                Route::post('/{id}/reject', [ReimbursementController::class, 'reject']);
+
+                Route::get('/{id}/download-input-file', [ReimbursementController::class, 'downloadInputFile']);
             });
 
             // 2. Polymorphic Physical Verification Proof Upload Bridge Endpoints
             Route::group(['prefix' => 'attachments'], function () {
                 // Endpoint mapping to uploadEvidenceAttachment(file) from frontend service
-                Route::post('/upload', [\App\Modules\Operations\Controllers\ReimbursementController::class, 'uploadAttachment']);
+                Route::post('/upload', [ReimbursementController::class, 'uploadAttachment']);
             });
         });
     });

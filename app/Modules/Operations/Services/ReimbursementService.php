@@ -149,7 +149,8 @@ class ReimbursementService
                 'required_tier' => $requiredTier,
                 'status' => 'pending',
                 'description' => $data['description'] ?? null,
-                'requested_by_user_id' => $userId
+                'requested_by_user_id' => $userId,
+                'distribution_mode'  => $data['distribution_mode'] ?? null
             ]);
 
             // Map and resolve attachments database associations cleanly
@@ -175,6 +176,115 @@ class ReimbursementService
                         'uploaded_by_user_id' => $userId,
                         'file_url'            => '', // Bypasses NOT NULL field constraint safely
                     ]);
+                }
+            }
+
+            return $reimbursement->load('attachments');
+        });
+    }
+
+    /**
+        * Core transactional logic to update text attributes, replace input spreadsheets, and sync attachments.
+        */
+    public function updateReimbursement(Reimbursement $reimbursement, array $data): Reimbursement
+    {
+        return DB::transaction(function () use ($reimbursement, $data) {
+
+            // Check if a brand new bulk input file has been uploaded first and is replacing the old file
+            if (!empty($data['file_reference_id']) && $data['file_reference_id'] !== $reimbursement->file_reference_id) {
+
+                // Identify and purge the old file from secure disk storage
+                $extensions = ['xlsx', 'csv', 'txt'];
+                foreach ($extensions as $ext) {
+                    $oldFilename = "uploaded_sheets/{$reimbursement->file_reference_id}.{$ext}";
+                    if (Storage::disk('secure_reimbursements')->exists($oldFilename)) {
+                        Storage::disk('secure_reimbursements')->delete($oldFilename);
+                        break; // Stop searching once the file is deleted
+                    }
+                }
+            }
+
+            // 1. Update text fields and the new spreadsheet file reference identifier
+            $reimbursement->update([
+                'ticket_id'          => $data['ticket_id'],
+                'description'        => $data['description'] ?? null,
+                'reimbursement_type' => $data['reimbursement_type'],
+                'reimbursement_mode' => $data['reimbursement_mode'],
+                'target_product_id'  => $data['target_product_id'] ?? null,
+                'amount'             => $data['amount'] ?? null,
+                'file_reference_id'  => $data['file_reference_id'] ?? $reimbursement->file_reference_id,
+                'is_bulk'            => $data['is_bulk'] ?? $reimbursement->is_bulk,
+                'distribution_mode'  => $data['distribution_mode'] ?? null,
+            ]);
+
+            $incomingTokens = $data['attachment_ids'] ?? [];
+            $userId = auth()->id() ?? 2;
+
+            // 2. Fetch and sync the evidence attachments list (add/remove logic)
+            $currentAttachments = ReimbursementAttachment::where('reimbursement_id', $reimbursement->id)->get();
+            $retainedAttachmentIds = [];
+
+            foreach ($currentAttachments as $attachment) {
+                $isRetained = false;
+
+                foreach ($incomingTokens as $token) {
+                    $cleanToken = basename($token);
+                    $tokenUuidOnly = pathinfo($cleanToken, PATHINFO_FILENAME);
+
+                    if ($attachment->id === $token
+                        || $attachment->file_path === $cleanToken
+                        || pathinfo($attachment->file_path, PATHINFO_FILENAME) === $tokenUuidOnly
+                    ) {
+                        $isRetained = true;
+                        break;
+                    }
+                }
+
+                if ($isRetained) {
+                    $retainedAttachmentIds[] = $attachment->id;
+                } else {
+                    if (!empty($attachment->file_path)) {
+                        Storage::disk('reimbursement_attachments')->delete($attachment->file_path);
+                    }
+                    $attachment->delete();
+                }
+            }
+
+            // 3. Register newly appended attachment files
+            foreach ($incomingTokens as $token) {
+                if (empty($token) || $token === "0") {
+                    continue;
+                }
+
+                $cleanFileNameOnDisk = basename($token);
+                $uuidCandidate = pathinfo($cleanFileNameOnDisk, PATHINFO_FILENAME);
+
+                if (in_array($token, $retainedAttachmentIds) || in_array($uuidCandidate, $retainedAttachmentIds)) {
+                    continue;
+                }
+
+                $preExisting = ReimbursementAttachment::where('id', $uuidCandidate)
+                    ->orWhere('file_path', $cleanFileNameOnDisk)
+                    ->first();
+
+                if ($preExisting) {
+                    $preExisting->update([
+                        'reimbursement_id' => $reimbursement->id
+                    ]);
+                    $retainedAttachmentIds[] = $preExisting->id;
+                } else {
+                    $newAttachmentId = Str::isUuid($uuidCandidate) ? $uuidCandidate : (string) Str::uuid();
+
+                    ReimbursementAttachment::create([
+                        'id'                  => $newAttachmentId,
+                        'reimbursement_id'    => $reimbursement->id,
+                        'file_name'           => 'Evidence_' . substr($cleanFileNameOnDisk, 0, 8),
+                        'file_path'           => $cleanFileNameOnDisk,
+                        'uploaded_by_user_id' => $userId,
+                        'file_url'            => '',
+                    ]);
+
+                    $retainedAttachmentIds[] = $newAttachmentId;
                 }
             }
 
