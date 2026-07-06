@@ -106,6 +106,7 @@ class ProviderInstanceController extends Controller implements HasMiddleware
             'connection_settings.password' => 'required|string',
             'connection_settings.user_agent' => 'nullable|string|max:255',
             'connection_settings.tps_limit' => 'nullable|integer|min:1',
+            'connection_settings.base_url' => 'nullable|string|max:255',
         ]);
         $validated['is_active'] = false;
         $validated['health_score'] = 100;
@@ -164,6 +165,7 @@ class ProviderInstanceController extends Controller implements HasMiddleware
             'connection_settings.password' => 'sometimes|string',
             'connection_settings.user_agent' => 'nullable|string|max:255',
             'connection_settings.tps_limit' => 'nullable|integer|min:1',
+            'connection_settings.base_url' => 'nullable|string|max:255',
         ]);
         $validated['tps_limit'] = $validated['connection_settings']['tps_limit'] ?? $instance->tps_limit ?? 10;
 

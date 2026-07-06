@@ -21,7 +21,14 @@ return [
         'category_slug' => 'smpp',
         'request_format' => 'binary',
         'response_format' => 'binary',
-        'command_actions' => [],
+        'command_actions' => ['create', 'delete', 'run', 'update', 'view'],
+        'commands' => [],
+    ],
+    'conviva-leap' => [
+        'category_slug'   => 'conviva-leap',
+        'request_format'  => 'json',
+        'response_format' => 'json',
+        'command_actions' => ['create', 'delete', 'run', 'update', 'view'],
         'commands' => [],
     ],
 ];

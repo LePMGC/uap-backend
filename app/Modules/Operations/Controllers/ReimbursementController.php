@@ -24,7 +24,7 @@ class ReimbursementController extends Controller implements HasMiddleware
             new \Illuminate\Routing\Controllers\Middleware('permission:view_all_reimbursements|view_own_reimbursements', only: ['index', 'show', 'stats']),
             new \Illuminate\Routing\Controllers\Middleware('permission:create_bulk_reimbursements', only: ['validateFile']),
             new \Illuminate\Routing\Controllers\Middleware('permission:create_single_reimbursements|create_bulk_reimbursements', only: ['store', 'uploadAttachment']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:approve_reimbursements', only: ['approve', 'reject']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:approve_tier1_reimbursements|approve_tier2_reimbursements|approve_tier3_reimbursements', only: ['approve', 'reject']),
         ];
     }
 

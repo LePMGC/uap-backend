@@ -12,7 +12,8 @@ class ProviderFactory
     protected static array $drivers = [
         'ericsson-ucip' => UcipProvider::class,
         'ericsson-cai'  => CaiProvider::class,
-        'ericsson-eda'  => CaiProvider::class, // EDA often shares the CAI protocol logic
+        'ericsson-eda'  => CaiProvider::class,
+        'conviva-leap'  => LeapProvider::class,
     ];
 
     /**
