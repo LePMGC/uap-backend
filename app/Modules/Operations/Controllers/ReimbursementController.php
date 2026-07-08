@@ -10,6 +10,7 @@ use Illuminate\Http\JsonResponse;
 use App\Modules\Operations\Transformers\ReimbursementResource;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Support\Facades\Storage;
+use App\Modules\Core\UserManagement\Models\User;
 
 class ReimbursementController extends Controller implements HasMiddleware
 {
@@ -23,8 +24,9 @@ class ReimbursementController extends Controller implements HasMiddleware
             'auth:api',
             new \Illuminate\Routing\Controllers\Middleware('permission:view_all_reimbursements|view_own_reimbursements', only: ['index', 'show', 'stats']),
             new \Illuminate\Routing\Controllers\Middleware('permission:create_bulk_reimbursements', only: ['validateFile']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:create_single_reimbursements|create_bulk_reimbursements', only: ['store', 'uploadAttachment']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:approve_tier1_reimbursements|approve_tier2_reimbursements|approve_tier3_reimbursements', only: ['approve', 'reject']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:create_single_reimbursement|create_bulk_reimbursements', only: ['store', 'uploadAttachment']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:view_all_reimbursements|view_own_reimbursements', only: ['getCreators', 'getReviewers']),
+            // Note: We remove the hardcoded 'approve_reimbursements' wrapper here so we can evaluate specific tiers contextually inside the actions.
         ];
     }
 
@@ -149,9 +151,9 @@ class ReimbursementController extends Controller implements HasMiddleware
     }
 
     /**
-      * GET /operations/reimbursements
-      * List with multi-tenant filtering based on view_all and view_own permission scopes.
-      */
+     * GET /operations/reimbursements
+     * List with multi-tenant filtering based on view_all and view_own permission scopes.
+     */
     public function index(Request $request): JsonResponse
     {
         $user = auth()->user();
@@ -163,142 +165,218 @@ class ReimbursementController extends Controller implements HasMiddleware
             ], 403);
         }
 
-        $query = Reimbursement::with(['attachments', 'requester', 'approver']);
+        $query = Reimbursement::with(['attachments', 'reviewer', 'requester']);
 
+        /**
+         * Permission scope
+         */
         if (!$user->can('view_all_reimbursements')) {
             $query->where('requested_by_user_id', $user->id);
         }
 
+
+        /**
+         * Search
+         */
         if ($request->filled('search')) {
             $search = $request->input('search');
+
             $query->where(function ($q) use ($search) {
                 $q->where('ticket_id', 'like', "%{$search}%")
                   ->orWhere('msisdn', 'like', "%{$search}%");
             });
         }
 
-        foreach (['status', 'reimbursement_type', 'reimbursement_mode', 'required_tier', 'msisdn'] as $filter) {
+
+        /**
+         * Standard filters
+         */
+        foreach ([
+            'status',
+            'reimbursement_type',
+            'reimbursement_mode',
+            'required_tier',
+            'msisdn'
+        ] as $filter) {
+
             if ($request->filled($filter)) {
                 $query->where($filter, $request->input($filter));
             }
         }
 
-        if ($request->filled('created_at_start')) {
-            $query->whereDate('created_at', '>=', $request->input('created_at_start'));
-        }
-        if ($request->filled('created_at_end')) {
-            $query->whereDate('created_at', '<=', $request->input('created_at_end'));
+
+        /**
+         * Requester filter
+         * FE sends: requested_by_user_id
+         */
+        if ($request->filled('created_by')) {
+            $query->where(
+                'requested_by_user_id',
+                $request->input('created_by')
+            );
         }
 
-        $paginatedData = $query->orderBy('created_at', 'desc')
+
+        /**
+         * Reviewer filter
+         * FE sends: approved_by_user_id
+         * DB column: reviewed_by_user_id
+         */
+        if ($request->filled('reviewed_by')) {
+            $query->where(
+                'reviewed_by_user_id',
+                $request->input('reviewed_by')
+            );
+        }
+
+
+        /**
+         * Date range
+         */
+        if ($request->filled('created_at_start')) {
+            $query->whereDate(
+                'created_at',
+                '>=',
+                $request->input('created_at_start')
+            );
+        }
+
+        if ($request->filled('created_at_end')) {
+            $query->whereDate(
+                'created_at',
+                '<=',
+                $request->input('created_at_end')
+            );
+        }
+
+
+        $paginatedData = $query
+            ->orderBy('created_at', 'desc')
             ->paginate($request->input('per_page', 10));
+
 
         return response()->json([
             'success' => true,
-            'data'    => \App\Modules\Operations\Transformers\ReimbursementResource::collection($paginatedData)
+            'data' => \App\Modules\Operations\Transformers\ReimbursementResource::collection($paginatedData)
                 ->response()
                 ->getData(true)
         ]);
     }
 
     /**
-     * GET /operations/reimbursements/{id}
-     * Inspect a specific adjustment profile record with tenancy guarding rules.
-     */
-    public function show($id): \Illuminate\Http\JsonResponse
+       * GET /operations/reimbursements/{id}
+       * Retrieve a detailed report regarding a specific submission instance.
+       */
+    public function show(string $id): JsonResponse
     {
+        $reimbursement = Reimbursement::with(['attachments', 'requester', 'reviewer'])->findOrFail($id);
         $user = auth()->user();
 
-        // 1. Enforce baseline permission check
-        if (!$user->can('view_all_reimbursements') && !$user->can('view_own_reimbursements')) {
-            return response()->json([
-                'success' => false,
-                'message' => 'You do not have permission to view reimbursement ledger details.'
-            ], 403);
-        }
+        // Build the basic resource array representation
+        $resourceData = new ReimbursementResource($reimbursement);
 
-        // 2. Hydrate model from database with relations
-        $reimbursement = Reimbursement::with(['attachments', 'bulkErrors', 'requester', 'approver'])
-            ->findOrFail($id);
-
-        // 3. Explicit Ownership Tenancy Validation
-        // Fail if they lack global access and the request was authored by someone else
-        if (!$user->can('view_all_reimbursements') && $reimbursement->requested_by_user_id !== $user->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Unauthorized access: You are not permitted to inspect reimbursement records authored by other operators.'
-            ], 403);
-        }
+        // Convert to array if it's an Eloquent Resource, or capture the data array
+        $data = json_decode(json_encode($resourceData), true);
 
         return response()->json([
             'success' => true,
-            'data'    => new \App\Modules\Operations\Transformers\ReimbursementResource($reimbursement)
+            'data'    => $data
         ]);
     }
 
     /**
-     * POST /operations/reimbursements/{id}/approve
-     */
-    public function approve($id): JsonResponse
+        * PUT /operations/reimbursements/{id}/approve
+        */
+    public function approve(Request $request, string $id): JsonResponse
     {
         $reimbursement = Reimbursement::findOrFail($id);
+        $user = auth()->user();
 
-        if ($reimbursement->status !== 'pending') {
-            return response()->json(['message' => 'This request instance is not pending review.'], 400);
+        // 1. Structural Guard Rule: Prevent Self-Reimbursement approvals
+        if ($reimbursement->requested_by_user_id === $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Security Guard: You are explicitly forbidden from approving your own reimbursement requests.'
+            ], 403);
         }
 
-        $reimbursement->update([
-            'status' => $reimbursement->reimbursement_mode === 'AUTO' ? 'success' : 'approved',
-            'approved_by_user_id' => auth()->id() ?? 1
-        ]);
+        // 2. Fetch the authoring user entity to determine their operating tier validation profile
+        $requester = $reimbursement->requester; // Assumes relation or look-up exists. If not, use: \App\Modules\Core\UserManagement\Models\User::find($reimbursement->requested_by_user_id);
 
-        return response()->json(['success' => true, 'data' => $reimbursement]);
-    }
+        // Contextual Fallback: If requester has tier2 role, require tier2 approval. Default to checking requester's role.
+        $isRequesterTier2 = $requester ? $requester->hasPermissionTo('approve_tier2_reimbursements') : false;
 
-    /**
-     * POST /operations/reimbursements/{id}/reject
-     */
-    public function reject(Request $request, $id): JsonResponse
-    {
-        $request->validate(['reason' => 'required|string|min:5']);
-        $reimbursement = Reimbursement::findOrFail($id);
-
-        if ($reimbursement->status !== 'pending') {
-            return response()->json(['message' => 'This request instance is not pending review.'], 400);
+        if ($isRequesterTier2) {
+            if (!$user->hasPermissionTo('approve_tier2_reimbursements')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Access Denied: You do not possess the approve_tier2_reimbursements permission required to verify this Tier 2 operator request.'
+                ], 403);
+            }
+        } else {
+            // Default assumes requester is a Tier 1 operator or baseline submitter
+            if (!$user->hasPermissionTo('approve_tier1_reimbursements')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Access Denied: You do not possess the approve_tier1_reimbursements permission required to verify this request.'
+                ], 403);
+            }
         }
 
-        $reimbursement->update([
-            'status' => 'rejected',
-            'rejection_reason' => $request->input('reason'),
-            'approved_by_user_id' => auth()->id() ?? 1
-        ]);
-
-        return response()->json(['success' => true, 'data' => $reimbursement]);
-    }
-
-    /**
-     * GET /operations/reimbursements/stats
-     */
-    public function stats(): JsonResponse
-    {
-        $totals = Reimbursement::count();
-        $byStatus = [
-            'pending' => Reimbursement::where('status', 'pending')->count(),
-            'approved' => Reimbursement::where('status', 'approved')->count(),
-            'success' => Reimbursement::where('status', 'success')->count(),
-            'rejected' => Reimbursement::where('status', 'rejected')->count(),
-            'failed' => Reimbursement::where('status', 'failed')->count(),
-        ];
+        // Call the updated service processor
+        $updatedRecord = $this->reimbursementService->approveReimbursement($reimbursement, $user->id);
 
         return response()->json([
             'success' => true,
-            'data' => [
-                'total' => $totals,
-                'by_status' => $byStatus,
-                'performance' => [
-                    'success_rate' => $totals > 0 ? round((Reimbursement::where('status', 'success')->count() / $totals) * 100, 2) : 100
-                ]
-            ]
+            'data'    => new ReimbursementResource($updatedRecord)
+        ]);
+    }
+
+    /**
+     * PUT /operations/reimbursements/{id}/reject
+     */
+    public function reject(Request $request, string $id): JsonResponse
+    {
+        $reimbursement = Reimbursement::findOrFail($id);
+        $user = auth()->user();
+
+        $validated = $request->validate([
+            'rejection_reason' => 'required|string|max:255'
+        ]);
+
+        // 1. Structural Guard Rule: Prevent Self-Reimbursement rejections
+        if ($reimbursement->requested_by_user_id === $user->id) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Security Guard: You cannot perform rejection audits on your own requests.'
+            ], 403);
+        }
+
+        // 2. Determine required rights matching the requester's structural rank
+        $requester = $reimbursement->requester;
+        $isRequesterTier2 = $requester ? $requester->hasPermissionTo('approve_tier2_reimbursements') : false;
+
+        if ($isRequesterTier2) {
+            if (!$user->hasPermissionTo('approve_tier2_reimbursements')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Access Denied: You require the approve_tier2_reimbursements permission to reject this Tier 2 operator request.'
+                ], 403);
+            }
+        } else {
+            if (!$user->hasPermissionTo('approve_tier1_reimbursements')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Access Denied: You require the approve_tier1_reimbursements permission to reject this request.'
+                ], 403);
+            }
+        }
+
+        $updatedRecord = $this->reimbursementService->rejectReimbursement($reimbursement, $validated['rejection_reason'], $user->id);
+
+        return response()->json([
+            'success' => true,
+            'data'    => new ReimbursementResource($updatedRecord)
         ]);
     }
 
@@ -431,5 +509,121 @@ class ReimbursementController extends Controller implements HasMiddleware
         ];
 
         return response()->download($absolutePath, $downloadName, $headers);
+    }
+
+
+    /**
+         * GET /operations/reimbursements/stats
+         */
+    public function stats(): JsonResponse
+    {
+        $totals = Reimbursement::count();
+        $byStatus = [
+            'pending' => Reimbursement::where('status', 'pending')->count(),
+            'approved' => Reimbursement::where('status', 'approved')->count(),
+            'success' => Reimbursement::where('status', 'success')->count(),
+            'rejected' => Reimbursement::where('status', 'rejected')->count(),
+            'failed' => Reimbursement::where('status', 'failed')->count(),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'total' => $totals,
+                'by_status' => $byStatus,
+                'performance' => [
+                    'success_rate' => $totals > 0 ? round((Reimbursement::where('status', 'success')->count() / $totals) * 100, 2) : 100
+                ]
+            ]
+        ]);
+    }
+
+
+    /**
+     * PUT /operations/reimbursements/{id}/cancel
+     * Terminate a pending reimbursement request.
+     */
+    public function cancel(Request $request, string $id): JsonResponse
+    {
+        $reimbursement = Reimbursement::findOrFail($id);
+        $user = auth()->user();
+
+        // 1. Lifecycle Guard Rule: Only pending requests can be aborted
+        if ($reimbursement->status !== 'pending') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid State Transition: This request cannot be cancelled because it has already been processed.'
+            ], 400);
+        }
+
+        // 2. Authorization Guard Matrix
+        $isCreator = ($reimbursement->requested_by_user_id === $user->id);
+        $isTier2Manager = $user->hasPermissionTo('approve_tier2_reimbursements');
+
+        if (!$isCreator && !$isTier2Manager) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Access Denied: You are not authorized to cancel this reimbursement request.'
+            ], 403);
+        }
+
+        // 3. Delegate execution safely to the service layer
+        $updatedRecord = $this->reimbursementService->cancelReimbursement($reimbursement, $user->id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'The reimbursement request has been cancelled successfully.',
+            'data'    => new ReimbursementResource($updatedRecord)
+        ]);
+    }
+
+
+    /**
+     * GET /operations/reimbursements/creators
+     *
+     * Users allowed to create reimbursement requests.
+     */
+    public function getCreators(): JsonResponse
+    {
+        $users = User::permission([
+            'create_single_reimbursement',
+            'create_bulk_reimbursements',
+        ])
+        ->select([
+            'id',
+            'name'
+        ])
+        ->orderBy('name')
+        ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $users
+        ]);
+    }
+
+
+    /**
+     * GET /operations/reimbursements/reviewers
+     *
+     * Users allowed to review/approve reimbursement requests.
+     */
+    public function getReviewers(): JsonResponse
+    {
+        $users = User::permission([
+            'approve_tier1_reimbursements',
+            'approve_tier2_reimbursements'
+        ])
+        ->select([
+            'id',
+            'name'
+        ])
+        ->orderBy('name')
+        ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $users
+        ]);
     }
 }

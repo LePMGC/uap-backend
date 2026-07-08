@@ -196,10 +196,6 @@ Route::middleware('auth:api')->group(function () {
 
                 Route::get('/download-template', [ReimbursementController::class, 'downloadTemplate']);
 
-                Route::get('/creators', [ReimbursementController::class, 'getCreators']);
-
-                Route::get('/reviewers', [ReimbursementController::class, 'getReviewers']);
-
                 // Fetch unified module status execution overview metric charts
                 Route::get('/stats', [ReimbursementController::class, 'stats']);
 

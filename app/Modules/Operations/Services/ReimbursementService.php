@@ -291,4 +291,73 @@ class ReimbursementService
             return $reimbursement->load('attachments');
         });
     }
+
+    /**
+     * Approve a reimbursement.
+     */
+    public function approveReimbursement(
+        Reimbursement $reimbursement,
+        int $reviewerId
+    ): Reimbursement {
+        return DB::transaction(function () use ($reimbursement, $reviewerId) {
+
+            // Prevent reviewing an already reviewed reimbursement.
+            if ($reimbursement->status !== 'pending') {
+                throw new \RuntimeException(
+                    'Only pending reimbursements can be approved.'
+                );
+            }
+
+            $reimbursement->update([
+                'status' => 'approved',
+                'reviewed_by_user_id' => $reviewerId,
+                'reviewed_at' => now(),
+                'rejection_reason' => null,
+            ]);
+
+            return $reimbursement->fresh([
+                'requester',
+                'reviewer',
+                'attachments',
+                'bulkErrors',
+            ]);
+        });
+    }
+
+    /**
+     * Reject a reimbursement.
+     */
+    public function rejectReimbursement(
+        Reimbursement $reimbursement,
+        string $rejectionReason,
+        int $reviewerId
+    ): Reimbursement {
+        return DB::transaction(function () use (
+            $reimbursement,
+            $rejectionReason,
+            $reviewerId
+        ) {
+
+            // Prevent reviewing an already reviewed reimbursement.
+            if ($reimbursement->status !== 'pending') {
+                throw new \RuntimeException(
+                    'Only pending reimbursements can be rejected.'
+                );
+            }
+
+            $reimbursement->update([
+                'status' => 'rejected',
+                'reviewed_by_user_id' => $reviewerId,
+                'reviewed_at' => now(),
+                'rejection_reason' => $rejectionReason,
+            ]);
+
+            return $reimbursement->fresh([
+                'requester',
+                'reviewer',
+                'attachments',
+                'bulkErrors',
+            ]);
+        });
+    }
 }

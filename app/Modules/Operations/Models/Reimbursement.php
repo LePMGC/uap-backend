@@ -2,6 +2,7 @@
 
 namespace App\Modules\Operations\Models;
 
+use App\Modules\Core\UserManagement\Models\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -14,80 +15,161 @@ class Reimbursement extends Model
     use HasUuids;
 
     /**
-     * Instruct Eloquent that key constraints are non-incrementing UUID string keys.
+     * UUID primary key configuration.
      */
     public $incrementing = false;
     protected $keyType = 'string';
 
+    /**
+     * Mass assignable attributes.
+     */
     protected $fillable = [
-        'ticket_id', 'msisdn', 'reimbursement_type', 'reimbursement_mode',
-        'target_product_id', 'amount', 'is_bulk', 'file_reference_id',
-        'required_tier', 'status', 'description', 'rejection_reason',
-        'requested_by_user_id', 'approved_by_user_id','distribution_mode'
-    ];
+        'ticket_id',
+        'msisdn',
+        'reimbursement_type',
+        'reimbursement_mode',
+        'target_product_id',
+        'amount',
+        'is_bulk',
+        'file_reference_id',
+        'distribution_mode',
 
-    protected $casts = [
-        'is_bulk' => 'boolean',
-        'amount' => 'float',
-        'required_tier' => 'integer',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime'
+        'required_tier',
+        'status',
+        'description',
+
+        'requested_by_user_id',
+
+        // Review information
+        'reviewed_by_user_id',
+        'reviewed_at',
+        'rejection_reason',
     ];
 
     /**
-     * Model Execution Boot Lifecycle Hooks
+     * Attribute casting.
+     */
+    protected $casts = [
+        'is_bulk'        => 'boolean',
+        'amount'         => 'float',
+        'required_tier'  => 'integer',
+        'reviewed_at'    => 'datetime',
+        'created_at'     => 'datetime',
+        'updated_at'     => 'datetime',
+    ];
+
+    /**
+     * Model lifecycle hooks.
      */
     protected static function boot()
     {
         parent::boot();
 
-        /**
-         * Automated Data Housekeeping: When an administrator hard-deletes a transaction entry
-         * from the platform, automatically purge the linked multi-tenant data sheet off the private storage disk.
-         */
         static::deleting(function (Reimbursement $reimbursement) {
-            if ($reimbursement->is_bulk && $reimbursement->file_reference_id) {
+
+            if (
+                $reimbursement->is_bulk &&
+                $reimbursement->file_reference_id
+            ) {
                 $reimbursement->deleteAssociatedFile();
             }
         });
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * RELATIONSHIP LINK: Fetch all extraction diagnostic errors for this batch.
-     * Maps the file_reference_id string locally to the bulk error logs records.
+     * Bulk validation errors.
      */
     public function bulkErrors(): HasMany
     {
-        return $this->hasMany(ReimbursementBulkError::class, 'file_reference_id', 'file_reference_id');
+        return $this->hasMany(
+            ReimbursementBulkError::class,
+            'file_reference_id',
+            'file_reference_id'
+        );
     }
 
     /**
-     * RELATIONSHIP LINK: Fetch all physical verification evidence receipts/proofs uploaded.
+     * Uploaded supporting documents.
      */
     public function attachments(): HasMany
     {
-        return $this->hasMany(ReimbursementAttachment::class, 'reimbursement_id');
+        return $this->hasMany(
+            ReimbursementAttachment::class,
+            'reimbursement_id'
+        );
     }
 
     /**
-     * RELATIONSHIP LINK: User profile mapping tracking who initialized this request.
+     * User who created the reimbursement.
      */
     public function requester(): BelongsTo
     {
-        return $this->belongsTo(\App\Modules\Core\UserManagement\Models\User::class, 'requested_by_user_id');
+        return $this->belongsTo(
+            User::class,
+            'requested_by_user_id'
+        );
     }
 
     /**
-     * RELATIONSHIP LINK: User profile mapping tracking who authorized this request.
+     * User who reviewed (approved/rejected) the reimbursement.
      */
-    public function approver(): BelongsTo
+    public function reviewer(): BelongsTo
     {
-        return $this->belongsTo(\App\Modules\Core\UserManagement\Models\User::class, 'approved_by_user_id');
+        return $this->belongsTo(
+            User::class,
+            'reviewed_by_user_id'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helper Methods
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Whether the reimbursement is pending.
+     */
+    public function isPending(): bool
+    {
+        return $this->status === 'pending';
     }
 
     /**
-     * MODEL METHOD: Stream the linked MSISDN file contents directly from storage.
-     * This reads the records on disk on-demand without bloating your database tables.
+     * Whether the reimbursement has been approved.
+     */
+    public function isApproved(): bool
+    {
+        return $this->status === 'approved';
+    }
+
+    /**
+     * Whether the reimbursement has been rejected.
+     */
+    public function isRejected(): bool
+    {
+        return $this->status === 'rejected';
+    }
+
+    /**
+     * Whether the reimbursement has been reviewed.
+     */
+    public function isReviewed(): bool
+    {
+        return in_array($this->status, [
+            'approved',
+            'rejected',
+        ]);
+    }
+
+    /**
+     * Reads uploaded spreadsheet rows from secure storage.
      */
     public function getUploadedRows(): array
     {
@@ -96,24 +178,31 @@ class Reimbursement extends Model
         }
 
         $filename = $this->getSecureDiskPath();
+
         if (!$filename) {
             return [];
         }
 
-        // Lazy load the file stream to parse data row indices sequentially
-        $absolutePath = Storage::disk('secure_reimbursements')->path($filename);
+        $absolutePath = Storage::disk('secure_reimbursements')
+            ->path($filename);
+
         $spreadsheet = IOFactory::load($absolutePath);
-        $sheetData = $spreadsheet->getActiveSheet()->toArray();
+
+        $sheetData = $spreadsheet
+            ->getActiveSheet()
+            ->toArray();
 
         $records = [];
+
         foreach ($sheetData as $index => $row) {
+
             if ($index === 0 || empty(array_filter($row))) {
-                continue; // Skip file table header and empty rows
+                continue;
             }
 
             $records[] = [
                 'msisdn' => trim($row[0] ?? ''),
-                'value'  => trim($row[1] ?? '') // Represents Product Catalog ID or Airtime amount depending on structural context
+                'value'  => trim($row[1] ?? ''),
             ];
         }
 
@@ -121,7 +210,7 @@ class Reimbursement extends Model
     }
 
     /**
-     * UTILITY METHOD: Locate and return the relative path on the secure disk.
+     * Returns the relative file path on the secure disk.
      */
     public function getSecureDiskPath(): ?string
     {
@@ -129,25 +218,33 @@ class Reimbursement extends Model
             return null;
         }
 
-        $extensions = ['xlsx', 'csv', 'txt'];
-        foreach ($extensions as $ext) {
-            $filename = "uploaded_sheets/{$this->file_reference_id}.{$ext}";
-            if (Storage::disk('secure_reimbursements')->exists($filename)) {
+        foreach (['xlsx', 'csv', 'txt'] as $extension) {
+
+            $filename = "uploaded_sheets/{$this->file_reference_id}.{$extension}";
+
+            if (
+                Storage::disk('secure_reimbursements')
+                    ->exists($filename)
+            ) {
                 return $filename;
             }
         }
+
         return null;
     }
 
     /**
-     * UTILITY METHOD: Secure disk purge runner.
+     * Deletes the uploaded spreadsheet.
      */
     public function deleteAssociatedFile(): bool
     {
         $filename = $this->getSecureDiskPath();
-        if ($filename) {
-            return Storage::disk('secure_reimbursements')->delete($filename);
+
+        if (!$filename) {
+            return false;
         }
-        return false;
+
+        return Storage::disk('secure_reimbursements')
+            ->delete($filename);
     }
 }

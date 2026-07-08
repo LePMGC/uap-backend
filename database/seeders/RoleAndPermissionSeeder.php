@@ -81,7 +81,6 @@ class RoleAndPermissionSeeder extends Seeder
             'create_bulk_reimbursements',
             'approve_tier1_reimbursements',
             'approve_tier2_reimbursements',
-            'approve_tier3_reimbursements',
             'manage_reimbursement_settings',
         ];
 
