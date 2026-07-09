@@ -7,13 +7,14 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Storage;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class Reimbursement extends Model
 {
     use HasUuids;
-
+    use SoftDeletes;
     /**
      * UUID primary key configuration.
      */
@@ -56,6 +57,7 @@ class Reimbursement extends Model
         'reviewed_at'    => 'datetime',
         'created_at'     => 'datetime',
         'updated_at'     => 'datetime',
+        'deleted_at'     => 'datetime',
     ];
 
     /**

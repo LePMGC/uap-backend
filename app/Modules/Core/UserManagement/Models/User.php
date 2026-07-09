@@ -10,7 +10,9 @@ use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable implements JWTSubject
 {
-    use HasApiTokens, Notifiable, HasRoles;
+    use HasApiTokens;
+    use Notifiable;
+    use HasRoles;
 
     /**
      * Fields that can be mass-assigned.
@@ -58,7 +60,7 @@ class User extends Authenticatable implements JWTSubject
             'email'        => $this->email,
             'phone_number' => $this->phone_number,
             // Dynamically get roles and permissions from Spatie
-            'role'        => $this->getRoleNames()[0] ?? null, // Assuming single role for simplicity
+            'role'        => $this->getRoleNames()[0] ?? null,
             'permissions'  => $this->getAllPermissions()->pluck('name'),
         ];
     }

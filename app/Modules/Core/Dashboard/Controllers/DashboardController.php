@@ -47,7 +47,7 @@ class DashboardController extends Controller
             // Restrict access to all dashboard operations (aggregates, platform metrics, feeds)
             new \Illuminate\Routing\Controllers\Middleware(
                 \Spatie\Permission\Middleware\PermissionMiddleware::using('view_connectivity_stats'),
-                only: ['getStats', 'getPlatformHealth', 'getProvidersHealth', 'getRecentActivities']
+                only: ['getStats', 'getPlatformHealth', 'getProvidersHealth']
             ),
         ];
     }
