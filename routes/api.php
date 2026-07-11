@@ -14,6 +14,7 @@ use App\Modules\Connectors\Controllers\CommandController;
 use App\Modules\Connectors\Controllers\ProviderCategoryController;
 use App\Modules\LeapLogs\Http\Controllers\LogParserController;
 use App\Modules\Operations\Controllers\ReimbursementController;
+use App\Modules\Operations\Controllers\CatalogController;
 
 /*
 |--------------------------------------------------------------------------
@@ -223,6 +224,10 @@ Route::middleware('auth:api')->group(function () {
                 Route::post('/{id}/cancel', [ReimbursementController::class, 'cancel']);
 
                 Route::get('/{id}/download-input-file', [ReimbursementController::class, 'downloadInputFile']);
+            });
+
+            Route::prefix('/catalog')->group(function () {
+                Route::get('bundles', [CatalogController::class, 'getBundlesForFrontend']);
             });
 
             // 2. Polymorphic Physical Verification Proof Upload Bridge Endpoints

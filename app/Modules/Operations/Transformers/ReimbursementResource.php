@@ -3,6 +3,7 @@
 namespace App\Modules\Operations\Transformers;
 
 use App\Modules\Core\UserManagement\Models\User;
+use App\Modules\Operations\Models\CatalogProduct;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -13,14 +14,19 @@ class ReimbursementResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        $requester = $this->whenLoaded('requester')
-            ?? User::find($this->requested_by_user_id);
+        $requester = $this->resource->relationLoaded('requester')
+            ? $this->requester
+            : User::find($this->requested_by_user_id);
 
         $user = auth()->user();
 
         $isRequesterTier2 = $requester
             ? $requester->hasPermissionTo('approve_tier2_reimbursements')
             : false;
+
+        $bundle = $this->resource->relationLoaded('bundle')
+            ? $this->bundle
+            : CatalogProduct::find($this->target_product_id);
 
         /*
         |--------------------------------------------------------------------------
@@ -55,6 +61,18 @@ class ReimbursementResource extends JsonResource
             'reimbursement_mode' => $this->reimbursement_mode,
             'distribution_mode'  => $this->distribution_mode,
             'target_product_id'  => $this->target_product_id,
+            'bundle'             => $this->when(
+                $bundle,
+                fn () => [
+                    'id'         => $bundle->id,
+                    'offer_id'   => $bundle->offer_id,
+                    'name'       => $bundle->name,
+                    'category'   => ucfirst(strtolower($bundle->type)),
+                    'price'      => number_format((float) $bundle->cost, 0, '.', ' ').' F',
+                    'validity'   => $bundle->validity ? (int) $bundle->validity : null,
+                    'validity_units' => $bundle->validity_units ? strtoupper($bundle->validity_units) : null,
+                ]
+            ),
 
             'amount'             => $this->amount !== null
                 ? (float) $this->amount

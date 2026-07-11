@@ -129,6 +129,18 @@ class Reimbursement extends Model
         );
     }
 
+
+    /**
+     * The bundle selected in this reimbursement, if applicable.
+     */
+    public function bundle(): BelongsTo
+    {
+        return $this->belongsTo(
+            CatalogProduct::class,
+            'target_product_id'
+        );
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Helper Methods
