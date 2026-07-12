@@ -84,7 +84,7 @@ class FundingAccountController extends Controller
     {
         return response()->json([
             'success' => true,
-            'data'    => $fundingAccount->load('providerInstance')
+            'data'    => $fundingAccount
         ]);
     }
 
