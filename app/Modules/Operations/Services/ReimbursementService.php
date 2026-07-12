@@ -295,33 +295,52 @@ class ReimbursementService
     /**
      * Approve a reimbursement.
      */
+    /**
+         * Approve a reimbursement and fire network provisioning workflows.
+         */
     public function approveReimbursement(
         Reimbursement $reimbursement,
         int $reviewerId
     ): Reimbursement {
-        return DB::transaction(function () use ($reimbursement, $reviewerId) {
+        // 1. Process business status updates inside an isolated transaction
+        $approvedReimbursement = DB::transaction(function () use ($reimbursement, $reviewerId) {
 
             // Prevent reviewing an already reviewed reimbursement.
-            if ($reimbursement->status !== 'pending') {
-                throw new \RuntimeException(
-                    'Only pending reimbursements can be approved.'
-                );
-            }
+            if ($reimbursement->status !== 'pending') { //[cite: 2]
+                throw new \RuntimeException( //[cite: 2]
+                    'Only pending reimbursements can be approved.' //[cite: 2]
+                ); //[cite: 2]
+            } //[cite: 2]
 
-            $reimbursement->update([
-                'status' => 'approved',
-                'reviewed_by_user_id' => $reviewerId,
-                'reviewed_at' => now(),
-                'rejection_reason' => null,
-            ]);
+            $reimbursement->update([ //[cite: 2]
+                'status' => 'approved', //[cite: 2]
+                'reviewed_by_user_id' => $reviewerId, //[cite: 2]
+                'reviewed_at' => now(), //[cite: 2]
+                'rejection_reason' => null, //[cite: 2]
+            ]); //[cite: 2]
 
-            return $reimbursement->fresh([
-                'requester',
-                'reviewer',
-                'attachments',
-                'bulkErrors',
-            ]);
+            return $reimbursement->fresh([ //[cite: 2]
+                'requester', //[cite: 2]
+                'reviewer', //[cite: 2]
+                'attachments', //[cite: 2]
+                'bulkErrors', //[cite: 2]
+            ]); //[cite: 2]
         });
+
+        // 2. Safely trigger the Provisioning Service outside the database write lock
+        try {
+            // Adjust the namespace lookup to wherever your ProvisioningService is registered
+            $provisioningService = app(\App\Modules\Operations\Services\ProvisioningService::class);
+            $provisioningService->dispatchProvisioning($approvedReimbursement);
+        } catch (\Exception $e) {
+            // Log infrastructure failures locally so the financial ledger remains intact,
+            // the record state remains 'approved', but operations are alerted.
+            \Illuminate\Support\Facades\Log::error(
+                "Immediate network provisioning failed to dispatch for Reimbursement ID #{$approvedReimbursement->id}: " . $e->getMessage()
+            );
+        }
+
+        return $approvedReimbursement;
     }
 
     /**

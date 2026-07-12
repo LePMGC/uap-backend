@@ -64,4 +64,20 @@ class CommandLog extends Model
     {
         return $this->belongsTo(Command::class, 'command_id');
     }
+
+    /**
+     * Get command log Id
+     */
+    public function getLogId(): string
+    {
+        return $this->id;
+    }
+
+    /**
+     * Get the command log's error message
+     */
+    public function getErrorMessage(): string
+    {
+        return $this->response_payload['error'] ?? 'Unknown error';
+    }
 }

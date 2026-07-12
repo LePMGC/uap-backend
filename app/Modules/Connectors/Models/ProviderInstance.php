@@ -18,7 +18,9 @@ class ProviderInstance extends Model
         'latency_ms',
         'last_heartbeat_at',
         'health_score',
-        'tps_limit'
+        'tps_limit',
+        'instance_type',
+        'system_key',
     ];
 
     /**
@@ -43,5 +45,20 @@ class ProviderInstance extends Model
     public function logs()
     {
         return $this->hasMany(CommandLog::class, 'provider_instance_id');
+    }
+
+    protected static function booted()
+    {
+        /*static::updating(function ($command) {
+            if ($command->getOriginal('command_type') === 'SYSTEM') {
+                throw new \Exception("System-defined orchestration hooks cannot be modified by regular operational requests.");
+            }
+        });*/
+
+        static::deleting(function ($command) {
+            if ($command->command_type === 'SYSTEM') {
+                throw new \Exception("Protected system command configuration cannot be purged.");
+            }
+        });
     }
 }

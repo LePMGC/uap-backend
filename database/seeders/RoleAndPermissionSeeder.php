@@ -61,7 +61,7 @@ class RoleAndPermissionSeeder extends Seeder
 
             // Scheduling (Cron/Automated Executions)
             'manage_batch_schedules',
-            'manage_own_batch_schedules', // Added for operator-level task scheduling
+            'manage_own_batch_schedules',
 
             // Audit & Observability Logs
             'view_audit_logs',
@@ -82,12 +82,29 @@ class RoleAndPermissionSeeder extends Seeder
             'approve_tier1_reimbursements',
             'approve_tier2_reimbursements',
             'manage_reimbursement_settings',
+
+            // =========================================================================
+            // NEW SECTION: PROVISIONING ORCHESTRATION ENGINE PERMISSIONS
+            // =========================================================================
+            // Funding Accounts Management (Financial Gateways)
+            'view_funding_accounts',
+            'create_funding_accounts',
+            'edit_funding_accounts',
+            'delete_funding_accounts',
+
+            // Provisioning Routing Profiles
+            'view_provisioning_profiles',
+            'create_provisioning_profiles',
+            'edit_provisioning_profiles',
+            'delete_provisioning_profiles',
+
+            // Operational Fault Management & Manual Re-trigger Tracking
+            'retry_failed_provisioning',
         ];
 
         // 2. Dynamic Command Action Permissions
-        // Aligned with the database-driven blueprint actions
         $categories = ['ericsson-ucip', 'ericsson-cai', 'smpp'];
-        $actions = ['view', 'create', 'update', 'delete', 'run', 'get', 'set']; // Expanded actions
+        $actions = ['view', 'create', 'update', 'delete', 'run', 'get', 'set'];
 
         foreach ($categories as $cat) {
             foreach ($actions as $action) {
@@ -142,7 +159,7 @@ class RoleAndPermissionSeeder extends Seeder
             'download_batch_results',
             'download_batch_report',
 
-            // Protocol Level Operational Rights (Crucial Addition)
+            // Protocol Level Operational Rights
             'ericsson-ucip.view',
             'ericsson-ucip.run',
             'ericsson-cai.view',
@@ -163,6 +180,15 @@ class RoleAndPermissionSeeder extends Seeder
             'create_single_reimbursement',
             'create_bulk_reimbursements',
             'approve_tier1_reimbursements',
+
+            // =========================================================================
+            // ASSIGNMENT GUARD: OPERATOR PROVISIONING CAPABILITIES
+            // =========================================================================
+            // Operators can read configurations for context, but cannot manipulate profiles or wallets.
+            'view_funding_accounts',
+            'view_provisioning_profiles',
+            // Gives operators authorization to retry network timeouts on stuck approved tickets
+            'retry_failed_provisioning',
         ];
 
         $operator->syncPermissions($operatorPermissions);

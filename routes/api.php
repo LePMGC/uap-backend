@@ -13,8 +13,10 @@ use App\Modules\Core\Auditing\Controllers\AuditLogController;
 use App\Modules\Connectors\Controllers\CommandController;
 use App\Modules\Connectors\Controllers\ProviderCategoryController;
 use App\Modules\LeapLogs\Http\Controllers\LogParserController;
-use App\Modules\Operations\Controllers\ReimbursementController;
-use App\Modules\Operations\Controllers\CatalogController;
+use App\Modules\Operations\Http\Controllers\ReimbursementController;
+use App\Modules\Operations\Http\Controllers\CatalogController;
+use App\Modules\Operations\Http\Controllers\FundingAccountController;
+use App\Modules\Operations\Http\Controllers\ProvisioningProfileController;
 
 /*
 |--------------------------------------------------------------------------
@@ -235,6 +237,9 @@ Route::middleware('auth:api')->group(function () {
                 // Endpoint mapping to uploadEvidenceAttachment(file) from frontend service
                 Route::post('/upload', [ReimbursementController::class, 'uploadAttachment']);
             });
+
+            Route::apiResource('provisioning-profiles', ProvisioningProfileController::class);
+            Route::apiResource('funding-accounts', FundingAccountController::class);
         });
     });
 });
