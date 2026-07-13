@@ -8,26 +8,39 @@ use App\Modules\Operations\Http\Requests\StoreProvisioningProfileRequest;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use App\Modules\Operations\Http\Requests\ProvisioningProfileStatusRequest;
 
 class ProvisioningProfileController extends Controller
 {
     /**
-     * Get the middleware that should be assigned to the controller.
-     * This fulfills the Illuminate\Routing\Controllers\HasMiddleware contract.
-    */
+     * Controller middleware definitions.
+     */
     public static function middleware(): array
     {
         return [
             'auth:api',
-            new \Illuminate\Routing\Controllers\Middleware('permission:view_provisioning_profiles', only: ['index', 'show']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:create_provisioning_profiles', only: ['store']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:update_provisioning_profiles', only: ['update']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:delete_provisioning_profiles', only: ['destroy']),
+            new \Illuminate\Routing\Controllers\Middleware(
+                'permission:view_provisioning_profiles',
+                only: ['index', 'show']
+            ),
+            new \Illuminate\Routing\Controllers\Middleware(
+                'permission:create_provisioning_profiles',
+                only: ['store']
+            ),
+            new \Illuminate\Routing\Controllers\Middleware(
+                'permission:edit_provisioning_profiles',
+                only: ['update', 'updateStatus']
+            ),
+            new \Illuminate\Routing\Controllers\Middleware(
+                'permission:delete_provisioning_profiles',
+                only: ['destroy']
+            ),
         ];
     }
 
+
     /**
-     * Display a scannable listing of profiles with their associated configuration maps.
+     * Display provisioning profiles.
      */
     public function index(Request $request): JsonResponse
     {
@@ -38,32 +51,42 @@ class ProvisioningProfileController extends Controller
             'fundingAccount:id,name,msisdn'
         ]);
 
-        /**
-         * Search criteria (Partial matching on name tracking key string)
-         */
+
         if ($request->filled('search')) {
             $search = $request->input('search');
-            $query->where('name', 'like', "%{$search}%");
+
+            $query->where(
+                'name',
+                'like',
+                "%{$search}%"
+            );
         }
 
-        /**
-         * Direct matching system configuration attributes
-         */
+
         foreach ([
             'reimbursement_type',
+            'catalog_product_type',
             'provider_instance_id',
             'funding_account_id',
             'execution_mode',
             'is_active'
         ] as $filter) {
+
             if ($request->filled($filter)) {
-                $query->where($filter, $request->input($filter));
+                $query->where(
+                    $filter,
+                    $request->input($filter)
+                );
             }
         }
 
+
         $paginatedData = $query
             ->orderBy('created_at', 'desc')
-            ->paginate($request->input('per_page', 10));
+            ->paginate(
+                $request->input('per_page', 10)
+            );
+
 
         return response()->json([
             'success' => true,
@@ -71,38 +94,63 @@ class ProvisioningProfileController extends Controller
         ]);
     }
 
+
     /**
-     * Store a new structural provisioning strategy configuration strategy safely.
+     * Create provisioning profile.
      */
     public function store(StoreProvisioningProfileRequest $request): JsonResponse
     {
         $profile = DB::transaction(function () use ($request) {
+
             $validated = $request->validated();
 
-            // Guardrail: If this profile is active, deactivate other profiles of the same type
+
+            /*
+             * Only one active provisioning profile
+             * is allowed per reimbursement type + product type.
+             *
+             * Examples:
+             *
+             * BUNDLE + DATA  -> one active profile
+             * BUNDLE + VOICE -> one active profile
+             * AIRTIME        -> one active profile
+             */
             if ($request->boolean('is_active', true)) {
-                ProvisioningProfile::where('reimbursement_type', $validated['reimbursement_type'])
-                    ->update(['is_active' => false]);
+
+                $this->deactivateExistingProfiles(
+                    $validated['reimbursement_type'],
+                    $validated['catalog_product_type'] ?? null
+                );
             }
+
 
             return ProvisioningProfile::create($validated);
         });
 
+
         return response()->json([
             'success' => true,
             'message' => 'Provisioning profile created successfully.',
-            'data'    => $profile->load(['providerInstance', 'command', 'fundingAccount'])
+            'data'    => $profile->load([
+                'providerInstance',
+                'command',
+                'debitCommand',
+                'fundingAccount'
+            ])
         ], 201);
     }
 
+
     /**
-     * Show detailed analytical information regarding a specific routing signature mapping.
+     * Display a single provisioning profile.
      */
-    public function show(ProvisioningProfile $provisioningProfile): JsonResponse
-    {
+    public function show(
+        ProvisioningProfile $provisioningProfile
+    ): JsonResponse {
+
         return response()->json([
             'success' => true,
-            'data'    => $provisioningProfile->load([
+            'data' => $provisioningProfile->load([
                 'providerInstance',
                 'command',
                 'debitCommand',
@@ -111,49 +159,169 @@ class ProvisioningProfileController extends Controller
         ]);
     }
 
+
     /**
-     * Update an existing system strategy matrix safely using a transaction block.
+     * Update provisioning profile.
      */
-    public function update(StoreProvisioningProfileRequest $request, ProvisioningProfile $provisioningProfile): JsonResponse
-    {
-        DB::transaction(function () use ($request, $provisioningProfile) {
+    public function update(
+        StoreProvisioningProfileRequest $request,
+        ProvisioningProfile $provisioningProfile
+    ): JsonResponse {
+
+        DB::transaction(function () use (
+            $request,
+            $provisioningProfile
+        ) {
+
             $validated = $request->validated();
 
-            // Guardrail: If turning active, auto-deactivate old entries of the same type
+
             if ($request->boolean('is_active')) {
-                ProvisioningProfile::where('reimbursement_type', $validated['reimbursement_type'])
-                    ->where('id', '!=', $provisioningProfile->id)
-                    ->update(['is_active' => false]);
+
+                $this->deactivateExistingProfiles(
+                    $validated['reimbursement_type'],
+                    $validated['catalog_product_type'] ?? null,
+                    $provisioningProfile->id
+                );
             }
+
 
             $provisioningProfile->update($validated);
         });
 
+
         return response()->json([
             'success' => true,
             'message' => 'Provisioning profile configuration updated safely.',
-            'data'    => $provisioningProfile->fresh(['providerInstance', 'command', 'fundingAccount'])
+            'data' => $provisioningProfile->fresh([
+                'providerInstance',
+                'command',
+                'debitCommand',
+                'fundingAccount'
+            ])
         ]);
     }
 
+
     /**
-     * Soft delete an execution schema safely.
+     * Delete provisioning profile.
      */
-    public function destroy(ProvisioningProfile $provisioningProfile): JsonResponse
-    {
+    public function destroy(
+        ProvisioningProfile $provisioningProfile
+    ): JsonResponse {
+
         try {
-            // Evaluates booted() exception rules if marked as system infrastructure[cite: 3]
+
             $provisioningProfile->delete();
+
 
             return response()->json([
                 'success' => true,
-                'message' => 'Provisioning rule successfully removed from the active system configurations pool.'
+                'message' =>
+                    'Provisioning rule successfully removed from active configurations.'
             ]);
+
         } catch (\Exception $e) {
+
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage()
             ], 422);
         }
+    }
+
+
+    /**
+     * Disable existing active profiles
+     * having the same provisioning scope.
+     */
+    private function deactivateExistingProfiles(
+        string $reimbursementType,
+        ?array $catalogProductTypes,
+        ?int $exceptId = null
+    ): void {
+
+        $query = ProvisioningProfile::where(
+            'reimbursement_type',
+            $reimbursementType
+        );
+
+
+        if (!empty($catalogProductTypes)) {
+
+            foreach ($catalogProductTypes as $type) {
+
+                $query->orWhereJsonContains(
+                    'catalog_product_types',
+                    $type
+                );
+            }
+
+        } else {
+
+            $query->whereNull(
+                'catalog_product_types'
+            );
+        }
+
+
+        if ($exceptId) {
+            $query->where(
+                'id',
+                '!=',
+                $exceptId
+            );
+        }
+
+
+        $query->update([
+            'is_active' => false
+        ]);
+    }
+
+    /**
+     * Update Status
+     */
+    public function updateStatus(
+        ProvisioningProfileStatusRequest $request,
+        ProvisioningProfile $provisioningProfile
+    ): JsonResponse {
+
+        DB::transaction(function () use (
+            $request,
+            $provisioningProfile
+        ) {
+
+            $isActive = $request->boolean('is_active');
+
+
+            if ($isActive) {
+
+                $this->deactivateExistingProfiles(
+                    $provisioningProfile->reimbursement_type,
+                    $provisioningProfile->catalog_product_type,
+                    $provisioningProfile->id
+                );
+            }
+
+
+            $provisioningProfile->update([
+                'is_active' => $isActive
+            ]);
+        });
+
+
+        return response()->json([
+            'success' => true,
+            'message' => $request->boolean('is_active')
+                ? 'Provisioning profile activated successfully.'
+                : 'Provisioning profile deactivated successfully.',
+            'data' => $provisioningProfile->fresh([
+                'providerInstance',
+                'command',
+                'debitCommand',
+                'fundingAccount'
+            ])
+        ]);
     }
 }

@@ -229,6 +229,19 @@ Route::middleware('auth:api')->group(function () {
             });
 
             Route::prefix('/catalog')->group(function () {
+
+                Route::get(
+                    'bundles',
+                    [CatalogController::class, 'getBundlesForFrontend']
+                );
+
+                Route::get(
+                    'bundle-categories',
+                    [CatalogController::class, 'getBundleCategories']
+                );
+
+            });
+            Route::prefix('/catalog')->group(function () {
                 Route::get('bundles', [CatalogController::class, 'getBundlesForFrontend']);
             });
 
@@ -238,8 +251,18 @@ Route::middleware('auth:api')->group(function () {
                 Route::post('/upload', [ReimbursementController::class, 'uploadAttachment']);
             });
 
+
+            /*Route::group(['prefix' => 'provisioning-profiles'], function () {
+                Route::get('/', [ProvisioningProfileController::class, 'index']);
+                Route::post('/', [ProvisioningProfileController::class, 'store']);
+                Route::get('/{id}', [ProvisioningProfileController::class, 'show']);
+                Route::put('/{id}', [ProvisioningProfileController::class, 'update']);
+            });*/
+
             Route::apiResource('provisioning-profiles', ProvisioningProfileController::class);
+            Route::patch('provisioning-profiles/{provisioningProfile}/status', [ProvisioningProfileController::class, 'updateStatus']);
             Route::apiResource('funding-accounts', FundingAccountController::class);
+            Route::patch('funding-accounts/{fundingAccount}/status', [FundingAccountController::class,'updateStatus']);
         });
     });
 });

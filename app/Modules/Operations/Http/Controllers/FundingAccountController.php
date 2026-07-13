@@ -7,6 +7,8 @@ use App\Modules\Operations\Models\FundingAccount;
 use App\Modules\Operations\Http\Requests\StoreFundingAccountRequest;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use App\Modules\Operations\Http\Requests\ProvisioningProfileStatusRequest;
+use App\Modules\Operations\Http\Requests\UpdateFundingAccountStatusRequest;
 
 class FundingAccountController extends Controller
 {
@@ -20,7 +22,7 @@ class FundingAccountController extends Controller
             'auth:api',
             new \Illuminate\Routing\Controllers\Middleware('permission:view_funding_accounts', only: ['index', 'show']),
             new \Illuminate\Routing\Controllers\Middleware('permission:create_funding_accounts', only: ['store']),
-            new \Illuminate\Routing\Controllers\Middleware('permission:update_funding_accounts', only: ['update']),
+            new \Illuminate\Routing\Controllers\Middleware('permission:edit_funding_accounts', only: ['update', 'updateStatus']),
             new \Illuminate\Routing\Controllers\Middleware('permission:delete_funding_accounts', only: ['destroy']),
         ];
     }
@@ -98,7 +100,7 @@ class FundingAccountController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'System funding account modified successfully.',
-            'data'    => $fundingAccount->fresh('providerInstance')
+            'data'    => $fundingAccount,
         ]);
     }
 
@@ -120,6 +122,25 @@ class FundingAccountController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Funding asset account successfully removed from service configurations tracking.'
+        ]);
+    }
+
+
+    public function updateStatus(
+        UpdateFundingAccountStatusRequest $request,
+        FundingAccount $fundingAccount
+    ): JsonResponse {
+
+        $fundingAccount->update([
+            'is_active' => $request->boolean('is_active')
+        ]);
+
+
+        return response()->json([
+            'success' => true,
+            'message' =>
+                'Funding account status updated successfully.',
+            'data' => $fundingAccount->fresh()
         ]);
     }
 }

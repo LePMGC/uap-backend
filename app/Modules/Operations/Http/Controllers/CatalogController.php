@@ -65,4 +65,42 @@ class CatalogController extends Controller
             ],
         ]);
     }
+
+
+    /**
+     * GET /api/operations/catalog/bundle-categories
+     *
+     * Returns available bundle categories/types
+     * for provisioning profile configuration.
+     */
+    public function getBundleCategories(Request $request): JsonResponse
+    {
+        $excludedCategories = [
+            'ASSOCIATION',
+            'INACTIVEDB',
+            'OLD_RESIDENTIAL',
+            'STOP',
+        ];
+
+
+        $categories = DB::table('catalog_products')
+            ->whereNull('deleted_at')
+            ->where('is_active', true)
+            ->whereNotIn('type', $excludedCategories)
+            ->select('type')
+            ->distinct()
+            ->orderBy('type')
+            ->pluck('type')
+            ->map(function ($type) {
+                return ucfirst(strtolower($type));
+            })
+            ->values()
+            ->toArray();
+
+
+        return response()->json([
+            'success' => true,
+            'data' => $categories,
+        ]);
+    }
 }

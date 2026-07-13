@@ -23,6 +23,7 @@ class ProvisioningProfile extends Model
     protected $fillable = [
         'name',
         'reimbursement_type',
+        'catalog_product_types',
         'provider_instance_id',
         'command_id',
         'debit_command_id',
@@ -33,9 +34,13 @@ class ProvisioningProfile extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        'catalog_product_types' => 'array',
     ];
 
 
+    /**
+     * Provider instance responsible for execution.
+     */
     public function providerInstance(): BelongsTo
     {
         return $this->belongsTo(
@@ -44,6 +49,10 @@ class ProvisioningProfile extends Model
         );
     }
 
+
+    /**
+     * Funding account used for provisioning operations.
+     */
     public function fundingAccount(): BelongsTo
     {
         return $this->belongsTo(
@@ -52,6 +61,10 @@ class ProvisioningProfile extends Model
         );
     }
 
+
+    /**
+     * Main provisioning command.
+     */
     public function command(): BelongsTo
     {
         return $this->belongsTo(
@@ -60,6 +73,10 @@ class ProvisioningProfile extends Model
         );
     }
 
+
+    /**
+     * Debit command used for reimbursement charging.
+     */
     public function debitCommand(): BelongsTo
     {
         return $this->belongsTo(
