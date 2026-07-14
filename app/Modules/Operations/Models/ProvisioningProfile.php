@@ -24,9 +24,11 @@ class ProvisioningProfile extends Model
         'name',
         'reimbursement_type',
         'catalog_product_types',
-        'provider_instance_id',
-        'command_id',
+        'provisioning_provider_instance_id',
+        'provisioning_command_id',
+        'debit_provider_instance_id',
         'debit_command_id',
+        'debit_using_provisioning_provider',
         'execution_mode',
         'funding_account_id',
         'is_active',
@@ -34,21 +36,31 @@ class ProvisioningProfile extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        'debit_using_provisioning_provider' => 'boolean',
         'catalog_product_types' => 'array',
     ];
 
-
     /**
-     * Provider instance responsible for execution.
+     * Provider instance responsible for provisioning.
      */
-    public function providerInstance(): BelongsTo
+    public function provisioningProviderInstance(): BelongsTo
     {
         return $this->belongsTo(
             ProviderInstance::class,
-            'provider_instance_id'
+            'provisioning_provider_instance_id'
         );
     }
 
+    /**
+     * Provider instance responsible for debit operations.
+     */
+    public function debitProviderInstance(): BelongsTo
+    {
+        return $this->belongsTo(
+            ProviderInstance::class,
+            'debit_provider_instance_id'
+        );
+    }
 
     /**
      * Funding account used for provisioning operations.
@@ -61,21 +73,19 @@ class ProvisioningProfile extends Model
         );
     }
 
-
     /**
-     * Main provisioning command.
+     * Command executed for provisioning.
      */
-    public function command(): BelongsTo
+    public function provisioningCommand(): BelongsTo
     {
         return $this->belongsTo(
             Command::class,
-            'command_id'
+            'provisioning_command_id'
         );
     }
 
-
     /**
-     * Debit command used for reimbursement charging.
+     * Command executed for debit operations.
      */
     public function debitCommand(): BelongsTo
     {

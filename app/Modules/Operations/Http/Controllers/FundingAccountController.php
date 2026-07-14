@@ -75,7 +75,7 @@ class FundingAccountController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'System funding account registered successfully.',
-            'data'    => $account->load('providerInstance')
+            'data'    => $account
         ], 201);
     }
 

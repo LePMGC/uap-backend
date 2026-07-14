@@ -45,10 +45,11 @@ class ProvisioningProfileController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = ProvisioningProfile::with([
-            'providerInstance:id,name,system_key',
-            'command:id,name,system_key',
-            'debitCommand:id,name,system_key',
-            'fundingAccount:id,name,msisdn'
+            'provisioningProviderInstance',
+            'provisioningCommand',
+            'debitProviderInstance',
+            'debitCommand',
+            'fundingAccount'
         ]);
 
 
@@ -65,11 +66,11 @@ class ProvisioningProfileController extends Controller
 
         foreach ([
             'reimbursement_type',
-            'catalog_product_type',
-            'provider_instance_id',
+            'provisioning_provider_instance_id',
+            'debit_provider_instance_id',
             'funding_account_id',
             'execution_mode',
-            'is_active'
+            'is_active',
         ] as $filter) {
 
             if ($request->filled($filter)) {
@@ -119,7 +120,7 @@ class ProvisioningProfileController extends Controller
 
                 $this->deactivateExistingProfiles(
                     $validated['reimbursement_type'],
-                    $validated['catalog_product_type'] ?? null
+                    $validated['catalog_product_types'] ?? null
                 );
             }
 
@@ -132,8 +133,9 @@ class ProvisioningProfileController extends Controller
             'success' => true,
             'message' => 'Provisioning profile created successfully.',
             'data'    => $profile->load([
-                'providerInstance',
-                'command',
+                'provisioningProviderInstance',
+                'provisioningCommand',
+                'debitProviderInstance',
                 'debitCommand',
                 'fundingAccount'
             ])
@@ -151,8 +153,9 @@ class ProvisioningProfileController extends Controller
         return response()->json([
             'success' => true,
             'data' => $provisioningProfile->load([
-                'providerInstance',
-                'command',
+                'provisioningProviderInstance',
+                'provisioningCommand',
+                'debitProviderInstance',
                 'debitCommand',
                 'fundingAccount'
             ])
@@ -180,7 +183,7 @@ class ProvisioningProfileController extends Controller
 
                 $this->deactivateExistingProfiles(
                     $validated['reimbursement_type'],
-                    $validated['catalog_product_type'] ?? null,
+                    $validated['catalog_product_types'] ?? null,
                     $provisioningProfile->id
                 );
             }
@@ -194,8 +197,9 @@ class ProvisioningProfileController extends Controller
             'success' => true,
             'message' => 'Provisioning profile configuration updated safely.',
             'data' => $provisioningProfile->fresh([
-                'providerInstance',
-                'command',
+                'provisioningProviderInstance',
+                'provisioningCommand',
+                'debitProviderInstance',
                 'debitCommand',
                 'fundingAccount'
             ])
@@ -249,13 +253,16 @@ class ProvisioningProfileController extends Controller
 
         if (!empty($catalogProductTypes)) {
 
-            foreach ($catalogProductTypes as $type) {
+            $query->where(function ($query) use ($catalogProductTypes) {
 
-                $query->orWhereJsonContains(
-                    'catalog_product_types',
-                    $type
-                );
-            }
+                foreach ($catalogProductTypes as $type) {
+
+                    $query->orWhereJsonContains(
+                        'catalog_product_types',
+                        $type
+                    );
+                }
+            });
 
         } else {
 
@@ -299,7 +306,7 @@ class ProvisioningProfileController extends Controller
 
                 $this->deactivateExistingProfiles(
                     $provisioningProfile->reimbursement_type,
-                    $provisioningProfile->catalog_product_type,
+                    $provisioningProfile->catalog_product_types,
                     $provisioningProfile->id
                 );
             }
@@ -317,8 +324,9 @@ class ProvisioningProfileController extends Controller
                 ? 'Provisioning profile activated successfully.'
                 : 'Provisioning profile deactivated successfully.',
             'data' => $provisioningProfile->fresh([
-                'providerInstance',
-                'command',
+                'provisioningProviderInstance',
+                'provisioningCommand',
+                'debitProviderInstance',
                 'debitCommand',
                 'fundingAccount'
             ])

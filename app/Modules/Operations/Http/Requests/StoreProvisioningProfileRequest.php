@@ -18,23 +18,23 @@ class StoreProvisioningProfileRequest extends FormRequest
             'name' => [
                 'required',
                 'string',
-                'max:100'
+                'max:100',
             ],
 
             'reimbursement_type' => [
                 'required',
                 Rule::in([
                     'AIRTIME',
-                    'BUNDLE'
-                ])
+                    'BUNDLE',
+                ]),
             ],
 
             /**
              * Required only for bundle provisioning.
              * Examples:
-             * Data
-             * Voice
-             * Sms
+             * - DATA
+             * - VOICE
+             * - SMS
              */
             'catalog_product_types' => [
                 'nullable',
@@ -49,40 +49,59 @@ class StoreProvisioningProfileRequest extends FormRequest
                 'max:255',
             ],
 
-            'provider_instance_id' => [
+            /*
+             * Provisioning execution pipeline.
+             */
+            'provisioning_provider_instance_id' => [
                 'required',
                 'integer',
-                'exists:provider_instances,id'
+                'exists:provider_instances,id',
             ],
 
-            'command_id' => [
+            'provisioning_command_id' => [
                 'nullable',
                 'integer',
-                'exists:commands,id'
+                'exists:commands,id',
+            ],
+
+            /*
+             * Debit execution pipeline.
+             */
+            'debit_using_provisioning_provider' => [
+                'boolean',
+            ],
+
+            'debit_provider_instance_id' => [
+                Rule::requiredIf(
+                    ! $this->boolean('debit_using_provisioning_provider')
+                ),
+                'nullable',
+                'integer',
+                'exists:provider_instances,id',
             ],
 
             'debit_command_id' => [
                 'nullable',
                 'integer',
-                'exists:commands,id'
+                'exists:commands,id',
             ],
 
             'execution_mode' => [
                 'required',
                 Rule::in([
                     'COMMAND',
-                    'BATCH'
-                ])
+                    'BATCH',
+                ]),
             ],
 
             'funding_account_id' => [
                 'required',
                 'integer',
-                'exists:funding_accounts,id'
+                'exists:funding_accounts,id',
             ],
 
             'is_active' => [
-                'boolean'
+                'boolean',
             ],
         ];
     }
