@@ -129,6 +129,14 @@ class Reimbursement extends Model
         );
     }
 
+    public function provisioningRequest(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(
+            ProvisioningRequest::class,
+            'reimbursement_id'
+        );
+    }
+
 
     /**
      * The bundle selected in this reimbursement, if applicable.

@@ -269,7 +269,15 @@ class ReimbursementController extends Controller implements HasMiddleware
        */
     public function show(string $id): JsonResponse
     {
-        $reimbursement = Reimbursement::with(['attachments', 'requester', 'reviewer'])->findOrFail($id);
+        $reimbursement = Reimbursement::with([
+            'attachments',
+            'requester',
+            'reviewer',
+            // Eager-load the provisioning context and connection logs
+            'provisioningRequest.executionCommandLog',
+            'provisioningRequest.executionBatchJob.jobInstances'
+        ])->findOrFail($id);
+
         $user = auth()->user();
 
         // Build the basic resource array representation

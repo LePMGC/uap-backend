@@ -119,6 +119,86 @@ class ReimbursementResource extends JsonResource
 
             /*
             |--------------------------------------------------------------------------
+            | Provisioning Execution Details (Embedded Sub-object)
+            |--------------------------------------------------------------------------
+            */
+
+            'provisioning_execution' => $this->when(
+                $this->resource->relationLoaded('provisioningRequest'),
+                function () {
+                    $provRequest = $this->provisioningRequest;
+
+                    if (!$provRequest) {
+                        return null;
+                    }
+
+                    $executionDetails = [
+                        'id'             => $provRequest->id,
+                        'status'         => $provRequest->status,
+                        'execution_type' => $provRequest->execution_type,
+                        'started_at'     => $provRequest->created_at?->toIso8601String(),
+                        'completed_at'   => $provRequest->updated_at?->toIso8601String(),
+                        'metrics'        => null,
+                        'errors'         => [],
+                    ];
+
+                    // Scenario A: Single command execution metrics
+                    if ($provRequest->execution_type === 'COMMAND' && $provRequest->relationLoaded('executionCommandLog')) {
+                        $command = $provRequest->executionCommandLog;
+
+                        if ($command) {
+                            $executionDetails['metrics'] = [
+                                'total_records'   => 1,
+                                'success_count'   => $command->is_successful ? 1 : 0,
+                                'failure_count'   => $command->is_successful ? 0 : 1,
+                                'processed_count' => 1,
+                            ];
+
+                            if (!$command->is_successful) {
+                                $executionDetails['errors'][] = [
+                                    'row'        => 1,
+                                    'identifier' => $this->msisdn ?? 'UNKNOWN',
+                                    'reason'     => $command->response_payload['message'] ?? 'Direct command execution failed.',
+                                ];
+                            }
+                        }
+                    }
+
+                    // Scenario B: Bulk batch job execution metrics (mapped to current JobInstance logic)
+                    if ($provRequest->execution_type === 'BATCH' && $provRequest->relationLoaded('executionBatchJob')) {
+                        $batchJobTemplate = $provRequest->executionBatchJob;
+
+                        if ($batchJobTemplate && $batchJobTemplate->relationLoaded('jobInstances')) {
+                            $batchJob = $batchJobTemplate->jobInstances->sortByDesc('created_at')->first();
+
+                            if ($batchJob) {
+                                $executionDetails['metrics'] = [
+                                    'total_records'   => $batchJob->total_count ?? 0,
+                                    'success_count'   => $batchJob->success_count ?? 0,
+                                    'failure_count'   => $batchJob->failure_count ?? 0,
+                                    'processed_count' => ($batchJob->success_count ?? 0) + ($batchJob->failure_count ?? 0),
+                                ];
+
+                                // Extract runtime failures collection if loaded
+                                if ($batchJob->relationLoaded('failures')) {
+                                    $executionDetails['errors'] = $batchJob->failures->map(function ($fail) {
+                                        return [
+                                            'row'        => $fail->row_index ?? null,
+                                            'identifier' => $fail->identifier ?? 'UNKNOWN',
+                                            'reason'     => $fail->error_message ?? 'Execution error.',
+                                        ];
+                                    })->toArray();
+                                }
+                            }
+                        }
+                    }
+
+                    return $executionDetails;
+                }
+            ),
+
+            /*
+            |--------------------------------------------------------------------------
             | Attachments
             |--------------------------------------------------------------------------
             */
