@@ -19,6 +19,25 @@ class BatchOrchestrator
      */
     public function execute(JobInstance $instance, ?string $traceId = null): void
     {
+        // PRE EXECUTION VALIDATION
+        $readiness = app(BatchReadinessService::class)->check(
+            false, // immediate execution
+            $instance->template->provider_instance_id,
+            $instance->template->command_id,
+            $instance->template->data_source_id
+        );
+
+        if (!$readiness['ready']) {
+
+            $instance->update([
+                'status' => 'failed',
+                'completed_at' => now(),
+                'failure_reason' => 'Platform readiness check failed.'
+            ]);
+
+            throw new Exception('Batch cannot start because platform prerequisites are not satisfied.');
+        }
+
         $instance->load('template.command', 'template.providerInstance');
         $command = $instance->template->command;
         $provider = $instance->template->providerInstance;

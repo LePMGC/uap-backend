@@ -7,6 +7,7 @@ use App\Modules\Connectors\Models\JobTemplate;
 use App\Modules\Connectors\Models\JobInstance;
 use App\Modules\Connectors\Services\BatchOrchestrator;
 use App\Modules\Connectors\Services\BatchSchemaService;
+use App\Modules\Connectors\Services\BatchReadinessService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -29,9 +30,11 @@ class BatchJobController extends Controller
     public function __construct(
         protected BatchOrchestrator $orchestrator,
         protected BatchSchemaService $schemaService,
-        protected BatchValidationService $validatorService
+        protected BatchValidationService $validatorService,
+        protected BatchReadinessService $batchReadiness
     ) {
     }
+
 
     public static function middleware(): array
     {
@@ -133,6 +136,23 @@ class BatchJobController extends Controller
      */
     public function storeTemplate(Request $request): \Illuminate\Http\JsonResponse
     {
+
+        $readiness = $this->batchReadiness->check(
+            scheduled: $request->boolean('is_scheduled'),
+            providerInstanceId: (int) $request->provider_instance_id,
+            commandId: (int) $request->command_id,
+            dataSourceId: (int) $request->data_source_id
+        );
+
+        if (!$readiness['ready']) {
+
+            return response()->json([
+                'message' => 'The platform is not ready to create this batch job.',
+                'checks' => $readiness['checks']
+            ], 422);
+
+        }
+
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'provider_instance_id' => 'required|exists:provider_instances,id',
@@ -405,9 +425,9 @@ class BatchJobController extends Controller
 
 
     /**
-         * Display a listing of job templates with pagination and filtering.
-         * Isolate results dynamically based on view_all and view_own permission scopes.
-         */
+        * Display a listing of job templates with pagination and filtering.
+        * Isolate results dynamically based on view_all and view_own permission scopes.
+    */
     public function indexTemplates(Request $request): \Illuminate\Http\JsonResponse
     {
         $user = auth()->user();

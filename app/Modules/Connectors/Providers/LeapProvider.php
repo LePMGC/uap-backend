@@ -101,13 +101,6 @@ class LeapProvider extends BaseProvider
         // 3. Assemble dynamic routing path string safely
         $url = rtrim($providerBaseUrl, '/') . '/' . ltrim($appId, '/');
 
-        // Telemetry Verification Log
-        \Log::info('LEAP Outbound Connection Probe Target', [
-            'generated_url' => $url,
-            'query_params'  => $queryParams,
-            'command_key' => $this->currentCommand['command_key']
-        ]);
-
         // 4. Dispatch the HTTP Request
         $response = Http::withoutVerifying()
             ->timeout(10)
