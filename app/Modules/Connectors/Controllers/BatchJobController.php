@@ -20,6 +20,7 @@ use League\Csv\Writer;
 use SplTempFileObject;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
+use League\Csv\Reader;
 
 class BatchJobController extends Controller
 {

@@ -8,6 +8,9 @@ abstract class BaseProvider
     protected array $blueprint;
     protected bool $isStateful = false;
     protected bool $authenticated = false;
+    protected ?array $currentCommand = null;
+
+
 
     public function __construct(array $config, array $blueprint)
     {
@@ -26,6 +29,7 @@ abstract class BaseProvider
                 $this->login();
             }
 
+            $this->currentCommand = $commandDef;
             $payload = $this->buildPayload($commandDef, $userParams);
             $rawResponse = $this->send($payload);
 
@@ -34,6 +38,7 @@ abstract class BaseProvider
                 'response' => $this->parseResponse($commandDef, $rawResponse, $userParams)
             ];
         } finally {
+            $this->currentCommand = null;
             // Optional: Close session after single command if necessary
             if ($this->isStateful && $this->authenticated) {
                 $this->logout();
@@ -251,4 +256,32 @@ abstract class BaseProvider
      * Extract the primary identifier (e.g., MSISDN) from a raw request payload.
      */
     abstract public function extractIdentifier(string $rawPayload): ?string;
+
+    /**
+     * Validate sample payload
+     */
+    public function validateSamplePayload(string $payload): array
+    {
+        return [
+            'valid' => true,
+            'errors' => []
+        ];
+    }
+
+
+    /**
+ * Validate that the command key matches or is present inside the payload.
+ *
+ * @param string $commandKey
+ * @param string $payload
+ * @return array ['valid' => bool, 'errors' => array]
+ */
+    public function validateCommandKeyOnPayload(string $commandKey, string $payload): array
+    {
+        // Default fallback for other standard providers (override per provider)
+        return [
+            'valid' => true,
+            'errors' => []
+        ];
+    }
 }

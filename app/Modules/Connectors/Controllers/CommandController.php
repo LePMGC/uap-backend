@@ -140,9 +140,8 @@ class CommandController extends Controller
     }
 
     /**
-     * Create a custom command (Cloning or New).
-     * Technical users can use this to save their own payload templates.
-     */
+         * Create a custom command (Cloning or New).
+         */
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
@@ -150,16 +149,36 @@ class CommandController extends Controller
             'name'            => 'required|string',
             'command_key'     => 'required|string',
             'request_payload' => 'required|string',
-            'action' => 'required|string',
+            'action'          => 'required|string',
         ]);
 
-        // 1. Use the Factory to get the right provider
-        $provider = ProviderFactory::make([], ['category_slug' => $validated['category_slug']]);
+        $provider = ProviderFactory::make([], [
+            'category_slug' => $validated['category_slug']
+        ]);
 
-        // 2. Delegate extraction to the provider instance
+        // 1. Generic structural schema validation
+        $validation = $provider->validateSamplePayload($validated['request_payload']);
+        if (!$validation['valid']) {
+            return response()->json([
+                'message' => 'Invalid sample payload structural schema',
+                'errors'  => $validation['errors']
+            ], 422);
+        }
+
+        // 2. Polymorphic command key alignment verification
+        $keyValidation = $provider->validateCommandKeyOnPayload(
+            $validated['command_key'],
+            $validated['request_payload']
+        );
+        if (!$keyValidation['valid']) {
+            return response()->json([
+                'message' => 'Command key validation failed',
+                'errors'  => $keyValidation['errors']
+            ], 422);
+        }
+
         $systemParams = $provider->extractSystemParams($validated['request_payload']);
 
-        // 3. Save the command with the auto-extracted parameters
         $command = Command::create(array_merge($validated, [
             'system_params' => $systemParams,
             'is_custom'     => true,
@@ -169,29 +188,54 @@ class CommandController extends Controller
         return response()->json($command, 201);
     }
 
+    /**
+     * Update the specified custom command parameters safely.
+     */
     public function update(Request $request, $id): JsonResponse
     {
         $command = Command::findOrFail($id);
 
         $validated = $request->validate([
-            'category_slug' => 'required|string',
-            'name' => 'required|string',
-            'command_key' => 'required|string',
+            'category_slug'   => 'required|string',
+            'name'            => 'required|string',
+            'command_key'     => 'required|string',
             'request_payload' => 'required|string',
-            'action' => 'required|string',
+            'action'          => 'required|string',
         ]);
 
-        // 1. Use the Factory to get the right provider
-        $provider = ProviderFactory::make([], ['category_slug' => $validated['category_slug']]);
+        $provider = ProviderFactory::make([], [
+            'category_slug' => $validated['category_slug']
+        ]);
 
-        // 2. Extract system params
+        // 1. Generic structural validation
+        $validation = $provider->validateSamplePayload($validated['request_payload']);
+        if (!$validation['valid']) {
+            return response()->json([
+                'message' => 'Invalid sample payload structural schema',
+                'errors'  => $validation['errors']
+            ], 422);
+        }
+
+        // 2. Polymorphic command key alignment validation
+        $keyValidation = $provider->validateCommandKeyOnPayload(
+            $validated['command_key'],
+            $validated['request_payload']
+        );
+        if (!$keyValidation['valid']) {
+            return response()->json([
+                'message' => 'Command key validation failed',
+                'errors'  => $keyValidation['errors']
+            ], 422);
+        }
+
         $validated['system_params'] = $provider->extractSystemParams($validated['request_payload']);
 
-        // 3. Single update
         $command->update($validated);
 
         return response()->json($command);
     }
+
+
     /**
      * Delete a custom command.
      */

@@ -234,7 +234,7 @@ class ProviderInstanceController extends Controller implements HasMiddleware
                     'success' => false,
                     'message' => 'Node is unreachable',
                     'error'   => $instance->last_error_message,
-                ], 503); // Service Unavailable
+                ], 503);
             }
 
             return response()->json([

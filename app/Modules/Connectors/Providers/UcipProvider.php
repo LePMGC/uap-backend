@@ -30,7 +30,11 @@ class UcipProvider extends BaseProvider
      */
     protected function buildPayload(array $commandDef, array $params): string
     {
-        $method = $commandDef['method'];
+        // Fallback chain: look into meta['method'], then direct 'method', then command_key or name
+        $method = $commandDef['meta']['method']
+            ?? $commandDef['method']
+            ?? $commandDef['command_key']
+            ?? $commandDef['name'];
 
         // 1. Define the Available System Parameter Pool
         $pool = [
@@ -43,13 +47,15 @@ class UcipProvider extends BaseProvider
                                  ?? 'UAP_ADMIN',
         ];
 
-        // 2. Filter the pool based on what is defined in the command
-        // We look into 'system_params' which we will pass from the Executor
+        // Handle both old array system params format and new DB-cast formats
         $allowedSystemKeys = $commandDef['system_params'] ?? [];
-        $authorizedSystemParams = [];
+        if (isset($commandDef['meta']['system_keys'])) {
+            // Map sequential array from DB meta (["originTransactionID", ...]) into keys
+            $allowedSystemKeys = array_fill_keys($commandDef['meta']['system_keys'], true);
+        }
 
+        $authorizedSystemParams = [];
         foreach ($allowedSystemKeys as $key => $placeholder) {
-            // If the key exists in our pool, we include it
             if (array_key_exists($key, $pool)) {
                 $authorizedSystemParams[$key] = $pool[$key];
             }
@@ -529,5 +535,122 @@ class UcipProvider extends BaseProvider
             return null;
         }
         return null;
+    }
+
+    public function validateSamplePayload(string $payload): array
+    {
+        $errors = [];
+
+        if (empty(trim($payload))) {
+            return [
+                'valid' => false,
+                'errors' => ['Payload cannot be empty']
+            ];
+        }
+
+        libxml_use_internal_errors(true);
+
+        try {
+            $xml = new \SimpleXMLElement($payload);
+
+            // Check XML-RPC root
+            if ($xml->getName() !== 'methodCall') {
+                $errors[] = 'Root element must be <methodCall>';
+            }
+
+            // Check methodName
+            if (!isset($xml->methodName) || empty((string)$xml->methodName)) {
+                $errors[] = 'Missing <methodName>';
+            }
+
+            // Check params structure
+            if (!isset($xml->params->param->value->struct)) {
+                $errors[] = 'Missing XML-RPC struct payload';
+            }
+
+            // Check required UCIP fields
+            $requiredSystemFields = [
+                'originNodeType',
+                'originHostName',
+                'originTransactionID',
+                'originTimeStamp'
+            ];
+
+            $foundFields = [];
+
+            if (isset($xml->params->param->value->struct->member)) {
+
+                foreach ($xml->params->param->value->struct->member as $member) {
+                    $foundFields[] = (string)$member->name;
+                }
+
+            }
+
+            foreach ($requiredSystemFields as $field) {
+                if (!in_array($field, $foundFields)) {
+                    $errors[] = "Missing required UCIP field: {$field}";
+                }
+            }
+
+
+        } catch (\Exception $e) {
+
+            $errors[] = "Invalid XML: " . $e->getMessage();
+
+        }
+
+
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors
+        ];
+    }
+
+
+    // Append this method to your UcipProvider class
+
+    /**
+     * Ensures that the XML <methodName> matches the structural command_key.
+     */
+    public function validateCommandKeyOnPayload(string $commandKey, string $payload): array
+    {
+        $errors = [];
+
+        try {
+            if (empty(trim($payload))) {
+                return ['valid' => false, 'errors' => ['Payload cannot be empty.']];
+            }
+
+            // Strip out potential leading garbage/HTTP metadata safely
+            if (strpos($payload, '<?xml') !== 0) {
+                $xmlStart = strpos($payload, '<?xml');
+                if ($xmlStart !== false) {
+                    $payload = substr($payload, $xmlStart);
+                }
+            }
+
+            libxml_use_internal_errors(true);
+            $xml = new \SimpleXMLElement($payload);
+
+            $xmlMethodName = isset($xml->methodName) ? trim((string)$xml->methodName) : null;
+
+            if (!$xmlMethodName) {
+                $errors[] = "The XML payload is missing the mandatory <methodName> tag.";
+            } elseif (strcasecmp($xmlMethodName, trim($commandKey)) !== 0) {
+                $errors[] = sprintf(
+                    "Command key mismatch! The structural key is '%s', but the payload defines <methodName>%s</methodName>.",
+                    $commandKey,
+                    $xmlMethodName
+                );
+            }
+
+        } catch (\Exception $e) {
+            $errors[] = "Failed to parse payload for key validation: " . $e->getMessage();
+        }
+
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors
+        ];
     }
 }

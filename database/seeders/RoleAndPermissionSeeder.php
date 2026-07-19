@@ -103,7 +103,7 @@ class RoleAndPermissionSeeder extends Seeder
         ];
 
         // 2. Dynamic Command Action Permissions
-        $categories = ['ericsson-ucip', 'ericsson-cai', 'smpp'];
+        $categories = ['ericsson-ucip', 'ericsson-cai', 'smpp', 'conviva-leap'];
         $actions = ['view', 'create', 'update', 'delete', 'run', 'get', 'set'];
 
         foreach ($categories as $cat) {

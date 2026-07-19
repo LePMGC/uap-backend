@@ -26,7 +26,7 @@ return [
     ],
     'conviva-leap' => [
         'category_slug'   => 'conviva-leap',
-        'request_format'  => 'json',
+        'request_format'  => 'url',
         'response_format' => 'json',
         'command_actions' => ['create', 'delete', 'run', 'update', 'view'],
         'commands' => [],
