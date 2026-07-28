@@ -94,4 +94,14 @@ class ProvisioningProfile extends Model
             'debit_command_id'
         );
     }
+
+    /**
+     * Determine the funding strategy string representation.
+     */
+    public function getFundingStrategy(): string
+    {
+        return $this->debit_using_provisioning_provider
+            ? 'SAME_PROVIDER'
+            : 'SEPARATE_PROVIDER';
+    }
 }

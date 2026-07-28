@@ -25,13 +25,26 @@ class LeapProvider extends BaseProvider
     {
         \Log::info('LEAP commandDef', $commandDef);
 
-        // 1. System Parameter Pool - containing optional systemic overrides
+        // 1. System Parameter Pool
         $pool = [
             'transactionId' => $this->generateTransactionId(),
             'channelName'   => $this->config['channel_name'] ?? 'UAP-Server',
         ];
 
-        // 2. Resolve allowed system parameters assigned to this command
+        // 2. Resolve default parameters from command blueprint template
+        $commandDefaults = [];
+
+        // Check request_payload or sample_payload for the sample URL string
+        $sampleUrl = $commandDef['request_payload'] ?? $commandDef['sample_payload'] ?? null;
+
+        if (!empty($sampleUrl) && is_string($sampleUrl)) {
+            $parsedSample = $this->parseSamplePayload($sampleUrl);
+            $commandDefaults = $parsedSample['params'] ?? [];
+        } elseif (!empty($commandDef['params']) && is_array($commandDef['params'])) {
+            $commandDefaults = $commandDef['params'];
+        }
+
+        // 3. System Params authorization check
         $allowedSystemKeys = $commandDef['system_params'] ?? [];
         if (isset($commandDef['meta']['system_keys'])) {
             $allowedSystemKeys = array_fill_keys($commandDef['meta']['system_keys'], true);
@@ -44,8 +57,8 @@ class LeapProvider extends BaseProvider
             }
         }
 
-        // 3. Combine with User parameters (User input overrides system defaults if explicitly provided)
-        $finalParams = array_merge($authorizedSystemParams, $params);
+        // 4. Merge order: Command Defaults -> Authorized System Defaults -> Runtime Execution Overrides
+        $finalParams = array_merge($commandDefaults, $authorizedSystemParams, $params);
 
         return json_encode($finalParams);
     }

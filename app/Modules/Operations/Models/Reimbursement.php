@@ -139,7 +139,7 @@ class Reimbursement extends Model
 
 
     /**
-     * The bundle selected in this reimbursement, if applicable.
+     * The bundle selected in this reimbursement.
      */
     public function bundle(): BelongsTo
     {

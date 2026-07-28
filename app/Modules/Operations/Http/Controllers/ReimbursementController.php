@@ -4,6 +4,7 @@ namespace App\Modules\Operations\Http\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Operations\Models\Reimbursement;
+use App\Modules\Operations\Models\ProvisioningRequest;
 use App\Modules\Operations\Services\ReimbursementService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
@@ -165,7 +166,15 @@ class ReimbursementController extends Controller implements HasMiddleware
             ], 403);
         }
 
-        $query = Reimbursement::with(['attachments', 'reviewer', 'requester']);
+        // 1. Core query with subselect for provisioning_status
+        $query = Reimbursement::select('reimbursements.*')
+            ->addSelect([
+                'latest_provisioning_status' => ProvisioningRequest::select('status')
+                    ->whereColumn('reimbursement_id', 'reimbursements.id')
+                    ->latest()
+                    ->limit(1)
+            ])
+            ->with(['attachments', 'reviewer', 'requester']);
 
         /**
          * Permission scope
@@ -173,7 +182,6 @@ class ReimbursementController extends Controller implements HasMiddleware
         if (!$user->can('view_all_reimbursements')) {
             $query->where('requested_by_user_id', $user->id);
         }
-
 
         /**
          * Search
@@ -187,27 +195,48 @@ class ReimbursementController extends Controller implements HasMiddleware
             });
         }
 
+        /**
+         * Dual-Group Status Filter Handling
+         */
+        if ($request->filled('status')) {
+            $status = strtolower($request->input('status'));
+
+            match ($status) {
+                // Group 1: Workflow Statuses
+                'pending', 'rejected' => $query->where('status', $status),
+
+                // Group 2: Approved (All)
+                'approved' => $query->where('status', 'approved'),
+
+                // Group 2: Fulfillment Statuses (Checked via subquery against ProvisioningRequest)
+                'queued', 'success', 'failed' => $query->where('status', 'approved')
+                    ->whereExists(function ($sub) use ($status) {
+                        $sub->select(\DB::raw(1))
+                            ->from('provisioning_requests')
+                            ->whereColumn('provisioning_requests.reimbursement_id', 'reimbursements.id')
+                            ->where('provisioning_requests.status', strtoupper($status));
+                    }),
+
+                default => null,
+            };
+        }
 
         /**
-         * Standard filters
+         * Standard filters (excluding 'status' which is handled above)
          */
         foreach ([
-            'status',
             'reimbursement_type',
             'reimbursement_mode',
             'required_tier',
             'msisdn'
         ] as $filter) {
-
             if ($request->filled($filter)) {
                 $query->where($filter, $request->input($filter));
             }
         }
 
-
         /**
          * Requester filter
-         * FE sends: requested_by_user_id
          */
         if ($request->filled('created_by')) {
             $query->where(
@@ -216,11 +245,8 @@ class ReimbursementController extends Controller implements HasMiddleware
             );
         }
 
-
         /**
          * Reviewer filter
-         * FE sends: approved_by_user_id
-         * DB column: reviewed_by_user_id
          */
         if ($request->filled('reviewed_by')) {
             $query->where(
@@ -228,7 +254,6 @@ class ReimbursementController extends Controller implements HasMiddleware
                 $request->input('reviewed_by')
             );
         }
-
 
         /**
          * Date range
@@ -249,11 +274,9 @@ class ReimbursementController extends Controller implements HasMiddleware
             );
         }
 
-
         $paginatedData = $query
             ->orderBy('created_at', 'desc')
             ->paginate($request->input('per_page', 10));
-
 
         return response()->json([
             'success' => true,

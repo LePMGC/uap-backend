@@ -6,9 +6,69 @@ use App\Modules\Core\UserManagement\Models\User;
 use App\Modules\Operations\Models\CatalogProduct;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\Storage;
+use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class ReimbursementResource extends JsonResource
 {
+    /**
+     * Helper to read row count from stored subscriber sheet
+     */
+    protected function getSubscriberCount(): ?int
+    {
+        if (!$this->is_bulk || !$this->file_reference_id) {
+            return null;
+        }
+
+        $relativeDiskPath = $this->resource->getSecureDiskPath();
+
+        if (!$relativeDiskPath || !Storage::disk('secure_reimbursements')->exists($relativeDiskPath)) {
+            return null;
+        }
+
+        try {
+            $absolutePath = Storage::disk('secure_reimbursements')->path($relativeDiskPath);
+            $extension = strtolower(pathinfo($relativeDiskPath, PATHINFO_EXTENSION));
+
+            // For lightweight plain text or CSV files
+            if (in_array($extension, ['csv', 'txt'])) {
+                $file = new \SplFileObject($absolutePath, 'r');
+                $file->setFlags(\SplFileObject::READ_AHEAD | \SplFileObject::SKIP_EMPTY | \SplFileObject::DROP_NEW_LINE);
+                $lines = 0;
+
+                foreach ($file as $index => $line) {
+                    if (trim($line) !== '') {
+                        $lines++;
+                    }
+                }
+
+                // If file has a header row, subtract 1
+                return max(0, $lines > 0 ? $lines - 1 : 0);
+            }
+
+            // For Excel sheets (.xlsx)
+            if ($extension === 'xlsx') {
+                $spreadsheet = IOFactory::load($absolutePath);
+                $sheetData = $spreadsheet->getActiveSheet()->toArray();
+                $count = 0;
+
+                foreach ($sheetData as $index => $row) {
+                    // Skip header row and empty rows
+                    if ($index === 0 || empty(array_filter($row))) {
+                        continue;
+                    }
+                    $count++;
+                }
+
+                return $count;
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Could not calculate row count for reimbursement sheet #{$this->id}: {$e->getMessage()}");
+        }
+
+        return null;
+    }
+
     /**
      * Transform the resource into an array.
      */
@@ -28,12 +88,6 @@ class ReimbursementResource extends JsonResource
             ? $this->bundle
             : CatalogProduct::find($this->target_product_id);
 
-        /*
-        |--------------------------------------------------------------------------
-        | Authorization capabilities
-        |--------------------------------------------------------------------------
-        */
-
         $canReview = false;
 
         if (
@@ -47,13 +101,6 @@ class ReimbursementResource extends JsonResource
         }
 
         return [
-
-            /*
-            |--------------------------------------------------------------------------
-            | Core information
-            |--------------------------------------------------------------------------
-            */
-
             'id'                 => $this->id,
             'ticket_id'          => $this->ticket_id,
             'msisdn'             => $this->msisdn,
@@ -64,12 +111,12 @@ class ReimbursementResource extends JsonResource
             'bundle'             => $this->when(
                 $bundle,
                 fn () => [
-                    'id'         => $bundle->id,
-                    'offer_id'   => $bundle->offer_id,
-                    'name'       => $bundle->name,
-                    'category'   => ucfirst(strtolower($bundle->type)),
-                    'price'      => number_format((float) $bundle->cost, 0, '.', ' ').' F',
-                    'validity'   => $bundle->validity ? (int) $bundle->validity : null,
+                    'id'             => $bundle->id,
+                    'offer_id'       => $bundle->offer_id,
+                    'name'           => $bundle->name,
+                    'category'       => ucfirst(strtolower($bundle->type)),
+                    'price'          => number_format((float) $bundle->cost, 0, '.', ' ').' F',
+                    'validity'       => $bundle->validity ? (int) $bundle->validity : null,
                     'validity_units' => $bundle->validity_units ? strtoupper($bundle->validity_units) : null,
                 ]
             ),
@@ -85,27 +132,27 @@ class ReimbursementResource extends JsonResource
                 ? url("/api/operations/reimbursements/{$this->id}/download-input-file")
                 : null,
 
+            /*
+            |--------------------------------------------------------------------------
+            | Bulk File Record Count
+            |--------------------------------------------------------------------------
+            */
+            'input_file_records_count' => $this->getSubscriberCount(),
+
             'required_tier'      => (int) $this->required_tier,
             'status'             => $this->status,
             'description'        => $this->description,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Review information
-            |--------------------------------------------------------------------------
-            */
+            'provisioning_status' => $this->latest_provisioning_status
+                ?? $this->provisioningRequest?->status
+                ?? $this->provisioning_status
+                ?? null,
 
             'rejection_reason'   => $this->rejection_reason,
             'reviewed_at'        => $this->reviewed_at?->toIso8601String(),
 
             'requested_by_user_id' => $this->requested_by_user_id,
             'reviewed_by_user_id'  => $this->reviewed_by_user_id,
-
-            /*
-            |--------------------------------------------------------------------------
-            | User names
-            |--------------------------------------------------------------------------
-            */
 
             'requester_name' => $this->when(
                 $this->resource->relationLoaded('requester'),
@@ -116,12 +163,6 @@ class ReimbursementResource extends JsonResource
                 $this->resource->relationLoaded('reviewer'),
                 fn () => $this->reviewer?->name
             ),
-
-            /*
-            |--------------------------------------------------------------------------
-            | Provisioning Execution Details (Embedded Sub-object)
-            |--------------------------------------------------------------------------
-            */
 
             'provisioning_execution' => $this->when(
                 $this->resource->relationLoaded('provisioningRequest'),
@@ -140,9 +181,9 @@ class ReimbursementResource extends JsonResource
                         'completed_at'   => $provRequest->updated_at?->toIso8601String(),
                         'metrics'        => null,
                         'errors'         => [],
+                        'reports'        => null,
                     ];
 
-                    // Scenario A: Single command execution metrics
                     if ($provRequest->execution_type === 'COMMAND' && $provRequest->relationLoaded('executionCommandLog')) {
                         $command = $provRequest->executionCommandLog;
 
@@ -157,39 +198,32 @@ class ReimbursementResource extends JsonResource
                             if (!$command->is_successful) {
                                 $executionDetails['errors'][] = [
                                     'row'        => 1,
-                                    'identifier' => $this->msisdn ?? 'UNKNOWN',
-                                    'reason'     => $command->response_payload['message'] ?? 'Direct command execution failed.',
+                                    'identifier' => $this->msisdn ?? 'N/A',
+                                    'reason'     => $command->getErrorMessage(),
                                 ];
                             }
                         }
                     }
 
-                    // Scenario B: Bulk batch job execution metrics (mapped to current JobInstance logic)
-                    if ($provRequest->execution_type === 'BATCH' && $provRequest->relationLoaded('executionBatchJob')) {
-                        $batchJobTemplate = $provRequest->executionBatchJob;
+                    if ($provRequest->execution_type === 'BATCH' && $provRequest->relationLoaded('executionJobInstance')) {
+                        $jobInstance = $provRequest->executionJobInstance;
 
-                        if ($batchJobTemplate && $batchJobTemplate->relationLoaded('jobInstances')) {
-                            $batchJob = $batchJobTemplate->jobInstances->sortByDesc('created_at')->first();
+                        if ($jobInstance) {
+                            $executionDetails['metrics'] = [
+                                'total_records'   => $jobInstance->total_records,
+                                'processed_count' => $jobInstance->processed_records,
+                                'success_count'   => $jobInstance->success_records,
+                                'failure_count'   => $jobInstance->failed_records,
+                                'progress_pct'    => $jobInstance->progress_percentage,
+                            ];
 
-                            if ($batchJob) {
-                                $executionDetails['metrics'] = [
-                                    'total_records'   => $batchJob->total_count ?? 0,
-                                    'success_count'   => $batchJob->success_count ?? 0,
-                                    'failure_count'   => $batchJob->failure_count ?? 0,
-                                    'processed_count' => ($batchJob->success_count ?? 0) + ($batchJob->failure_count ?? 0),
-                                ];
-
-                                // Extract runtime failures collection if loaded
-                                if ($batchJob->relationLoaded('failures')) {
-                                    $executionDetails['errors'] = $batchJob->failures->map(function ($fail) {
-                                        return [
-                                            'row'        => $fail->row_index ?? null,
-                                            'identifier' => $fail->identifier ?? 'UNKNOWN',
-                                            'reason'     => $fail->error_message ?? 'Execution error.',
-                                        ];
-                                    })->toArray();
-                                }
-                            }
+                            $executionDetails['reports'] = [
+                                'summary_url' => url("/api/connectors/batch/instances/{$jobInstance->id}/summary"),
+                                'errors_csv'  => $jobInstance->failed_records > 0
+                                    ? url("/api/connectors/batch/instances/{$jobInstance->id}/export-errors")
+                                    : null,
+                                'full_report' => url("/api/connectors/batch/instances/{$jobInstance->id}/report"),
+                            ];
                         }
                     }
 
@@ -197,21 +231,9 @@ class ReimbursementResource extends JsonResource
                 }
             ),
 
-            /*
-            |--------------------------------------------------------------------------
-            | Attachments
-            |--------------------------------------------------------------------------
-            */
-
             'attachments' => ReimbursementAttachmentResource::collection(
                 $this->whenLoaded('attachments')
             ),
-
-            /*
-            |--------------------------------------------------------------------------
-            | Bulk validation errors
-            |--------------------------------------------------------------------------
-            */
 
             'bulk_errors' => $this->when(
                 $this->is_bulk && $this->resource->relationLoaded('bulkErrors'),
@@ -226,33 +248,14 @@ class ReimbursementResource extends JsonResource
                 }
             ),
 
-            /*
-            |--------------------------------------------------------------------------
-            | Audit information
-            |--------------------------------------------------------------------------
-            */
-
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
 
-            /*
-            |--------------------------------------------------------------------------
-            | Frontend capabilities
-            |--------------------------------------------------------------------------
-            */
-
             'capabilities' => [
-
-                // User can approve OR reject.
-                'can_review' => $canReview,
-
-                // Kept for backward compatibility if the frontend
-                // still checks this property.
+                'can_review'  => $canReview,
                 'can_approve' => $canReview,
-
-                'can_reject' => $canReview,
-
-                'can_cancel' => $user
+                'can_reject'  => $canReview,
+                'can_cancel'  => $user
                     && $this->status === 'pending'
                     && $this->requested_by_user_id === $user->id,
             ],

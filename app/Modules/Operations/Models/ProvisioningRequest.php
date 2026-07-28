@@ -2,8 +2,11 @@
 
 namespace App\Modules\Operations\Models;
 
-use Illuminate\Database\Eloquent\Model;
+use App\Modules\Connectors\Models\JobInstance;
+use App\Modules\Connectors\Models\JobTemplate;
+use App\Modules\Connectors\Models\CommandLog;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 
 class ProvisioningRequest extends Model
@@ -31,7 +34,6 @@ class ProvisioningRequest extends Model
         'id' => 'string',
     ];
 
-
     protected static function boot(): void
     {
         parent::boot();
@@ -43,13 +45,11 @@ class ProvisioningRequest extends Model
         });
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | Relationships
     |--------------------------------------------------------------------------
     */
-
 
     public function profile()
     {
@@ -59,7 +59,6 @@ class ProvisioningRequest extends Model
         );
     }
 
-
     public function reimbursement()
     {
         return $this->belongsTo(
@@ -68,15 +67,13 @@ class ProvisioningRequest extends Model
         );
     }
 
-
     public function debitCommandLog()
     {
-        return this->belongsTo(
+        return $this->belongsTo(
             CommandLog::class,
             'debit_command_log_id'
         );
     }
-
 
     public function executionCommandLog()
     {
@@ -86,12 +83,26 @@ class ProvisioningRequest extends Model
         );
     }
 
-
     public function executionBatchJob()
     {
         return $this->belongsTo(
             JobTemplate::class,
             'execution_batch_job_id'
+        );
+    }
+
+    /**
+     * Link directly to the specific execution run (JobInstance)
+     */
+    public function executionJobInstance()
+    {
+        return $this->hasOneThrough(
+            JobInstance::class,
+            JobTemplate::class,
+            'id',
+            'job_template_id',
+            'execution_batch_job_id',
+            'id'
         );
     }
 }
