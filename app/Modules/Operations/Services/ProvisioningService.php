@@ -28,37 +28,45 @@ class ProvisioningService
     public function dispatchProvisioning(Reimbursement $reimbursement): void
     {
         try {
-            $profileQuery = ProvisioningProfile::query()
+
+            if ($reimbursement->is_bulk && $reimbursement->distribution_mode === 'MANY_MANY') {
+                $profile = ProvisioningProfile::where('reimbursement_type', $reimbursement->reimbursement_type)
+                    ->where('is_active', true)
+                    ->firstOrFail();
+            } else {
+                $profileQuery = ProvisioningProfile::query()
                 ->where('reimbursement_type', $reimbursement->reimbursement_type)
                 ->whereRaw('is_active IS TRUE')
                 ->with('fundingAccount');
 
-            // If a product is attached, match profiles by the product's type (case-insensitive)
-            if ($reimbursement->target_product_id) {
-                $catalogProduct = $reimbursement->bundle
-                    ?? CatalogProduct::find($reimbursement->target_product_id);
+                // If a product is attached, match profiles by the product's type (case-insensitive)
+                if ($reimbursement->target_product_id) {
+                    $catalogProduct = $reimbursement->bundle
+                        ?? CatalogProduct::find($reimbursement->target_product_id);
 
-                if ($catalogProduct && !empty($catalogProduct->type)) {
-                    $productType = strtolower($catalogProduct->type);
+                    if ($catalogProduct && !empty($catalogProduct->type)) {
+                        $productType = strtolower($catalogProduct->type);
 
-                    // Case-insensitive lookup inside the JSON array
-                    $profileQuery->whereRaw("
+                        // Case-insensitive lookup inside the JSON array
+                        $profileQuery->whereRaw("
                     EXISTS (
                         SELECT 1 
                         FROM jsonb_array_elements_text(catalog_product_types::jsonb) AS elem 
                         WHERE LOWER(elem) = ?
                     )
                     ", [$productType]);
+                    }
+                }
+
+                $profile = $profileQuery->first();
+
+                if (!$profile) {
+                    throw new ProvisioningException(
+                        "No active provisioning profile configured for {$reimbursement->reimbursement_type}"
+                    );
                 }
             }
 
-            $profile = $profileQuery->first();
-
-            if (!$profile) {
-                throw new ProvisioningException(
-                    "No active provisioning profile configured for {$reimbursement->reimbursement_type}"
-                );
-            }
 
             $request = ProvisioningRequest::firstOrCreate(
                 ['reimbursement_id' => $reimbursement->id],
@@ -230,8 +238,13 @@ class ProvisioningService
         try {
             $traceId = request()->header('X-Request-ID') ?? (string) Str::uuid();
 
+            // 1. Mark ProvisioningRequest as RUNNING
+            $request->update([
+                'status' => 'RUNNING',
+                'execution_step' => 'PROCESSING_BATCH',
+            ]);
+
             // Delegate building/readiness/persistence to the specialized builder
-            // (Note: $request->update(...) is executed inside $this->bulkBuilder->build)
             $instance = $this->bulkBuilder->build($reimb, $profile, $request);
 
             // Execute batch processing using orchestrator engine

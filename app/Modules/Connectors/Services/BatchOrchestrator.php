@@ -8,6 +8,7 @@ use App\Modules\Connectors\Jobs\ProcessBatchChunk;
 use Illuminate\Support\Facades\{Bus, Storage};
 use League\Csv\Reader;
 use App\Modules\Core\Auditing\Services\UapLogger;
+use App\Modules\Connectors\Services\BatchReadinessService;
 use Maatwebsite\Excel\Facades\Excel;
 use Throwable;
 use Exception;
@@ -19,16 +20,24 @@ class BatchOrchestrator
      */
     public function execute(JobInstance $instance, ?string $traceId = null): void
     {
+        // Retrieve linked ProvisioningRequest/Reimbursement to detect distribution mode
+        $requestId = $instance->template->source_config['provisioning_request_id']
+                  ?? $instance->instance_parameters['provisioning_request_id']
+                  ?? null;
+
+        $request = $requestId ? \App\Modules\Operations\Models\ProvisioningRequest::with('reimbursement')->find($requestId) : null;
+        $isManyMany = $request?->reimbursement?->distribution_mode === 'MANY_MANY';
+
         // PRE EXECUTION VALIDATION
+        // If MANY_MANY, pass null for provider & command IDs so readiness checks core platform components only
         $readiness = app(BatchReadinessService::class)->check(
-            false, // immediate execution
-            $instance->template->provider_instance_id,
-            $instance->template->command_id,
+            false,
+            $isManyMany ? null : $instance->template->provider_instance_id,
+            $isManyMany ? null : $instance->template->command_id,
             $instance->template->data_source_id
         );
 
         if (!$readiness['ready']) {
-
             $instance->update([
                 'status' => 'failed',
                 'completed_at' => now(),
@@ -237,9 +246,6 @@ class BatchOrchestrator
     /**
      * Updated finalize to accept ID and strictly update status
      */
-    /**
-     * Updated finalize to accept the JobInstance object directly
-     */
     public function finalize(JobInstance $instance, string $status = 'completed', ?string $traceId = null): void
     {
         // Check if already completed to prevent duplicate logs/updates
@@ -247,19 +253,62 @@ class BatchOrchestrator
             return;
         }
 
-        // Mark as completed and set the end time
+        // Mark JobInstance as completed
         $instance->update([
-            'status' => $status,
+            'status'       => $status,
             'completed_at' => now()
         ]);
 
         UapLogger::info('BatchEngine', 'JOB_COMPLETED', [
             'instance_id' => $instance->id,
-            'total' => $instance->total_records,
-            'success' => $instance->success_records,
-            'failed' => $instance->failed_records
+            'total'       => $instance->total_records,
+            'success'     => $instance->success_records,
+            'failed'      => $instance->failed_records
         ], $traceId);
+
+        // --- SYNC STATUS TO PROVISIONING REQUEST ---
+        $this->syncProvisioningRequestStatus($instance, $status);
     }
+
+    protected function syncProvisioningRequestStatus(JobInstance $instance, string $status): void
+    {
+        // Retrieve linked ProvisioningRequest ID from template, source_config, or parameters
+        $requestId = $instance->template->source_config['provisioning_request_id']
+                  ?? $instance->instance_parameters['provisioning_request_id']
+                  ?? null;
+
+        if (!$requestId) {
+            return;
+        }
+
+        $request = \App\Modules\Operations\Models\ProvisioningRequest::find($requestId);
+        if (!$request) {
+            return;
+        }
+
+        $isSuccess = ($status === 'completed') && ($instance->failed_records === 0);
+
+        if ($isSuccess) {
+            $request->update([
+                'status'         => 'SUCCESS',
+                'execution_step' => 'COMPLETED',
+                'completed_at'   => now(),
+            ]);
+            if ($request->reimbursement) {
+                $request->reimbursement->update(['provisioning_status' => 'SUCCESS']);
+            }
+        } else {
+            $request->update([
+                'status'        => 'FAILED',
+                'error_message' => "Batch completed with {$instance->failed_records} failed records.",
+                'completed_at'  => now(),
+            ]);
+            if ($request->reimbursement) {
+                $request->reimbursement->update(['provisioning_status' => 'FAILED']);
+            }
+        }
+    }
+
 
     public function generateReport(JobInstance $instance, string $format)
     {

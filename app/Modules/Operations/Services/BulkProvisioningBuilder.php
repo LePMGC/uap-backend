@@ -28,19 +28,37 @@ class BulkProvisioningBuilder
     ): JobInstance {
         /*
         |--------------------------------------------------------------------------
-        | 1. Platform readiness validation (Moved Before Template Creation)
+        | 1. Platform readiness validation
         |--------------------------------------------------------------------------
         */
+        $isManyMany = ($reimbursement->distribution_mode === 'MANY_MANY');
+
+        // Skip individual provider ping if distribution mode is MANY_MANY
         $check = $this->readiness->check(
             false,
-            $profile->provisioning_provider_instance_id,
-            $profile->provisioning_command_id,
+            $isManyMany ? null : $profile->provisioning_provider_instance_id,
+            $isManyMany ? null : $profile->provisioning_command_id,
             $profile->data_source_id ?? 1
         );
 
         if (!$check['ready']) {
-            \Illuminate\Support\Facades\Log::error("Readiness check failure details:", $check);
-            throw new ProvisioningException("Batch platform is not ready.");
+            $failedChecks = collect($check['required_checks'])
+                ->where('status_type', 'danger')
+                ->map(fn ($item) => [
+                    'check'   => $item['name'] ?? 'Unknown',
+                    'status'  => $item['status'] ?? 'Failed',
+                    'message' => $item['message'] ?? 'No message provided'
+                ])
+                ->values()
+                ->toArray();
+
+            \Illuminate\Support\Facades\Log::error("Readiness Check Failed for Reimbursement #{$reimbursement->id}:", [
+                'failed_checks' => $failedChecks,
+                'full_payload'  => $check,
+            ]);
+
+            $failedNames = implode(', ', array_column($failedChecks, 'check'));
+            throw new ProvisioningException("Batch platform is not ready. Failed check(s): {$failedNames}");
         }
 
         /*
@@ -85,7 +103,8 @@ class BulkProvisioningBuilder
             'status'               => 'active',
             'source_config'        => [
                 'temporary_path' => $temporaryPath,
-                'has_header'     => true
+                'has_header'     => true,
+                'provisioning_request_id' => $request->id,
             ],
             'column_mapping'       => $mapping,
             'job_specific_config'  => [],
@@ -123,16 +142,16 @@ class BulkProvisioningBuilder
         if ($reimbursement->reimbursement_type === 'BUNDLE') {
             if ($reimbursement->distribution_mode === 'MANY_MANY') {
                 return [
-                    'MSISDN'   => ['mode' => 'static',  'value' => $profile->fundingAccount->msisdn],
-                    'bNumber'  => ['mode' => 'dynamic', 'value' => 'msisdn'],
-                    'offerId'  => ['mode' => 'dynamic', 'value' => 'value']
+                    'MSISDN'  => ['mode' => 'static',  'value' => $profile->fundingAccount->msisdn],
+                    'bNumber' => ['mode' => 'dynamic', 'value' => 'msisdn'],
+                    'offerId' => ['mode' => 'dynamic', 'value' => 'offer_id'],
                 ];
             }
 
             return [
-                'MSISDN'   => ['mode' => 'static',  'value' => $profile->fundingAccount->msisdn],
-                'bNumber'  => ['mode' => 'dynamic', 'value' => 'msisdn'],
-                'offerId'  => ['mode' => 'static',  'value' => $reimbursement->target_product_id]
+                'MSISDN'  => ['mode' => 'static',  'value' => $profile->fundingAccount->msisdn],
+                'bNumber' => ['mode' => 'dynamic', 'value' => 'msisdn'],
+                'offerId' => ['mode' => 'static',  'value' => $reimbursement->bundle->offer_id ?? $reimbursement->target_product_id],
             ];
         }
 
@@ -140,13 +159,13 @@ class BulkProvisioningBuilder
             if ($reimbursement->distribution_mode === 'MANY_MANY') {
                 return [
                     'msisdn' => ['mode' => 'dynamic', 'value' => 'msisdn'],
-                    'amount' => ['mode' => 'dynamic', 'value' => 'value']
+                    'amount' => ['mode' => 'dynamic', 'value' => 'value'],
                 ];
             }
 
             return [
                 'msisdn' => ['mode' => 'dynamic', 'value' => 'msisdn'],
-                'amount' => ['mode' => 'static',  'value' => $reimbursement->amount]
+                'amount' => ['mode' => 'static',  'value' => $reimbursement->amount],
             ];
         }
 

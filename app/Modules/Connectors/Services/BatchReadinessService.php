@@ -9,14 +9,9 @@ use App\Modules\Connectors\Models\ProviderInstance;
 use Cron\CronExpression;
 use App\Modules\Connectors\Services\BlueprintService;
 use App\Modules\Connectors\Providers\ProviderFactory;
-use Exception;
 
 class BatchReadinessService
 {
-    /**
-     * Provider validation.
-     */
-
     public function __construct(
         protected HealthService $health
     ) {
@@ -24,18 +19,12 @@ class BatchReadinessService
 
     /**
      * Check whether a batch can be created.
-     *
-     * For scheduled jobs:
-     *  - Queue infrastructure is advisory only.
-     *
-     * For immediate jobs:
-     *  - Queue infrastructure is mandatory.
      */
     public function check(
         bool $scheduled,
-        int $providerInstanceId,
-        int $commandId,
-        int $dataSourceId,
+        ?int $providerInstanceId = null,
+        ?int $commandId = null,
+        int $dataSourceId = 1,
         ?string $cronExpression = null
     ): array {
 
@@ -57,18 +46,10 @@ class BatchReadinessService
         */
 
         if ($scheduled) {
-
-            // Scheduler can still register the template even if Horizon
-            // is currently stopped.
-
             $warnings[] = $this->health->checkRedisHealth();
             $warnings[] = $this->health->checkQueueHealth();
             $warnings[] = $this->health->checkHorizonHealth();
-
         } else {
-
-            // Immediate execution needs the queue now.
-
             $required[] = $this->health->checkRedisHealth();
             $required[] = $this->health->checkQueueHealth();
             $required[] = $this->health->checkHorizonHealth();
@@ -104,13 +85,9 @@ class BatchReadinessService
             ->every(fn ($item) => $item['status_type'] !== 'danger');
 
         return [
-
             'ready' => $ready,
-
             'required_checks' => $required,
-
             'warnings' => $warnings,
-
             'checks' => array_merge($required, $warnings),
         ];
     }
@@ -146,8 +123,17 @@ class BatchReadinessService
         ];
     }
 
-    protected function checkProvider(int $id): array
+    protected function checkProvider(?int $id): array
     {
+        if (is_null($id)) {
+            return [
+                'name' => 'Provider',
+                'status' => 'Dynamic',
+                'status_type' => 'healthy',
+                'message' => 'Provider is dynamically resolved per row.'
+            ];
+        }
+
         $instance = ProviderInstance::find($id);
 
         if (!$instance) {
@@ -160,13 +146,6 @@ class BatchReadinessService
         }
 
         try {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Build Provider Driver
-            |--------------------------------------------------------------------------
-            */
-
             $blueprint = app(BlueprintService::class)
                 ->getCategoryBlueprint($instance->category_slug);
 
@@ -184,18 +163,11 @@ class BatchReadinessService
 
             $provider = ProviderFactory::make($config, $blueprint);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Perform live connectivity check
-            |--------------------------------------------------------------------------
-            */
-
             $online = $provider->checkConnectivity();
 
             $instance->refresh();
 
             if (!$online) {
-
                 return [
                     'name' => 'Provider',
                     'status' => 'Offline',
@@ -204,14 +176,7 @@ class BatchReadinessService
                 ];
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Optional latency warning
-            |--------------------------------------------------------------------------
-            */
-
             if (!is_null($instance->latency_ms) && $instance->latency_ms > 2000) {
-
                 return [
                     'name' => 'Provider',
                     'status' => "{$instance->latency_ms}ms",
@@ -227,8 +192,7 @@ class BatchReadinessService
                 'message' => null
             ];
 
-        } catch (Exception $e) {
-
+        } catch (\Exception $e) {
             return [
                 'name' => 'Provider',
                 'status' => 'Error',
@@ -238,12 +202,20 @@ class BatchReadinessService
         }
     }
 
-
     /**
      * Command validation.
      */
-    protected function checkCommand(int $id): array
+    protected function checkCommand(?int $id): array
     {
+        if (is_null($id)) {
+            return [
+                'name' => 'Command',
+                'status' => 'Dynamic',
+                'status_type' => 'healthy',
+                'message' => 'Command is dynamically resolved per row.'
+            ];
+        }
+
         $command = Command::find($id);
 
         if (!$command) {

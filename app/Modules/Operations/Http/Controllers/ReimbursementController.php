@@ -12,6 +12,7 @@ use App\Modules\Operations\Transformers\ReimbursementResource;
 use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Support\Facades\Storage;
 use App\Modules\Core\UserManagement\Models\User;
+use Illuminate\Validation\Rule;
 
 class ReimbursementController extends Controller implements HasMiddleware
 {
@@ -130,17 +131,25 @@ class ReimbursementController extends Controller implements HasMiddleware
     public function store(Request $request): JsonResponse
     {
         $validatedData = $request->validate([
-            'ticket_id' => 'required|string',
+            'ticket_id'          => 'required|string',
             'reimbursement_type' => 'required|in:BUNDLE,AIRTIME',
             'reimbursement_mode' => 'required|in:AUTO,MANUAL',
-            'is_bulk' => 'required|boolean',
-            'msisdn' => 'required_if:is_bulk,false|nullable|string',
-            'target_product_id' => 'required_if:reimbursement_type,BUNDLE|nullable|string',
-            'amount' => 'required_if:reimbursement_type,AIRTIME|nullable|numeric|min:0.01',
-            'file_reference_id' => 'required_if:is_bulk,true|nullable|string',
-            'description' => 'nullable|string',
-            'attachment_ids' => 'nullable|array',
-            'distribution_mode' => 'nullable|string|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY',
+            'is_bulk'            => 'required|boolean',
+            'msisdn'             => 'required_if:is_bulk,false|nullable|string',
+            'distribution_mode'  => 'nullable|string|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY',
+            'target_product_id'  => [
+                'nullable',
+                'string',
+                Rule::requiredIf(function () use ($request) {
+                    // Required for BUNDLE unless distribution_mode is MANY_MANY
+                    return $request->input('reimbursement_type') === 'BUNDLE'
+                        && $request->input('distribution_mode') !== 'MANY_MANY';
+                }),
+            ],
+            'amount'             => 'required_if:reimbursement_type,AIRTIME|nullable|numeric|min:0.01',
+            'file_reference_id'  => 'required_if:is_bulk,true|nullable|string',
+            'description'        => 'nullable|string',
+            'attachment_ids'     => 'nullable|array',
         ]);
 
         $reimbursement = $this->reimbursementService->createReimbursement(
@@ -298,7 +307,7 @@ class ReimbursementController extends Controller implements HasMiddleware
             'reviewer',
             // Eager-load the provisioning context and connection logs
             'provisioningRequest.executionCommandLog',
-            'provisioningRequest.executionBatchJob.jobInstances'
+            'provisioningRequest.executionBatchJob.instances'
         ])->findOrFail($id);
 
         $user = auth()->user();
@@ -463,7 +472,6 @@ class ReimbursementController extends Controller implements HasMiddleware
     {
         $reimbursement = Reimbursement::findOrFail($id);
 
-        // Guard rule: Block modifications on already audited/processed entries
         if ($reimbursement->status !== 'pending') {
             return response()->json([
                 'success' => false,
@@ -476,13 +484,20 @@ class ReimbursementController extends Controller implements HasMiddleware
             'description'        => 'nullable|string|max:255',
             'reimbursement_type' => 'required|string|in:BUNDLE,AIRTIME',
             'reimbursement_mode' => 'required|string|in:AUTO,MANUAL',
-            'target_product_id'  => 'nullable|string|required_if:reimbursement_type,BUNDLE',
+            'distribution_mode'  => 'nullable|string|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY',
+            'target_product_id'  => [
+                'nullable',
+                'string',
+                Rule::requiredIf(function () use ($request) {
+                    return $request->input('reimbursement_type') === 'BUNDLE'
+                        && $request->input('distribution_mode') !== 'MANY_MANY';
+                }),
+            ],
             'amount'             => 'nullable|numeric|required_if:reimbursement_type,AIRTIME',
             'is_bulk'            => 'nullable|boolean',
             'file_reference_id'  => 'nullable|string|max:100',
             'attachment_ids'     => 'nullable|array',
             'attachment_ids.*'   => 'required|string',
-            'distribution_mode' => 'nullable|string|in:SINGLE_SINGLE,MANY_SINGLE,MANY_MANY'
         ]);
 
         $updatedRecord = $this->reimbursementService->updateReimbursement($reimbursement, $validated);

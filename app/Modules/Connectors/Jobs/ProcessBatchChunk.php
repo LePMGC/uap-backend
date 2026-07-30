@@ -15,6 +15,7 @@ use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Arr;
 use Throwable;
+use App\Modules\Operations\Services\DynamicProfileResolver;
 
 class ProcessBatchChunk implements ShouldQueue
 {
@@ -49,13 +50,23 @@ class ProcessBatchChunk implements ShouldQueue
     /**
      * Execute the chunk with self-throttling to respect Provider TPS.
      */
-    public function handle(CommandExecutor $executor): void
-    {
+    public function handle(
+        CommandExecutor $executor,
+        DynamicProfileResolver $profileResolver // 👈 Inject dynamic profile resolver
+    ): void {
         $instance = JobInstance::with(['template.command'])->find($this->instance->id);
 
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
             return;
         }
+
+        // Determine if this batch job is running in MANY_MANY distribution mode
+        $requestId = $instance->template->source_config['provisioning_request_id']
+                  ?? $instance->instance_parameters['provisioning_request_id']
+                  ?? null;
+
+        $provisioningRequest = $requestId ? \App\Modules\Operations\Models\ProvisioningRequest::with('reimbursement')->find($requestId) : null;
+        $isManyMany = $provisioningRequest?->reimbursement?->distribution_mode === 'MANY_MANY';
 
         $dir = "jobs/{$instance->id}";
         $successFile = fopen(Storage::path("{$dir}/results_success.csv"), 'a');
@@ -66,7 +77,7 @@ class ProcessBatchChunk implements ShouldQueue
         $uncommittedProcessed = 0;
 
         foreach ($this->chunk as $row) {
-            $rowStartTime = microtime(true); // Start timing the request
+            $rowStartTime = microtime(true);
             $uncommittedProcessed++;
 
             try {
@@ -85,12 +96,33 @@ class ProcessBatchChunk implements ShouldQueue
                     Arr::set($nestedParams, $key, $value);
                 }
 
-                // Execution
+                // Defaults from template[cite: 21]
+                $targetProviderId = (int) $instance->template->provider_instance_id;
+                $targetCommandId  = (int) $this->commandId;
+
+                // ------------------------------------------------------------------
+                // DYNAMIC RESOLUTION FOR MANY_MANY MODE
+                // ------------------------------------------------------------------
+                if ($isManyMany) {
+                    $offerId = $nestedParams['offerId'] ?? $row['offer_id'] ?? $row['offerId'] ?? null;
+
+                    if (!$offerId) {
+                        throw new \Exception("Missing required offerId in batch record.");
+                    }
+
+                    // Resolve matching ProvisioningProfile dynamically per row[cite: 13]
+                    $profile = $profileResolver->resolveForOfferId($offerId);
+
+                    $targetProviderId = $profile->provisioning_provider_instance_id;
+                    $targetCommandId  = $profile->provisioning_command_id;
+                }
+
+                // Execution via CommandExecutor[cite: 20, 21]
                 $logEntry = $executor->execute(
-                    (int) $instance->template->provider_instance_id,
-                    (int) $this->commandId,
+                    $targetProviderId,
+                    $targetCommandId,
                     $nestedParams,
-                    (int) $instance->template->user_id,
+                    (int) ($instance->user_id ?? $instance->template->user_id ?? 1),
                     $instance->id,
                     $this->traceId
                 );
@@ -105,7 +137,8 @@ class ProcessBatchChunk implements ShouldQueue
                     $localFailed++;
                     $this->appendLocked($failedFile, array_merge($row, [
                         'command_log_id' => $logEntry->command_key ?? 'N/A',
-                        'response_code' => $logEntry->response_code
+                        'response_code'  => $logEntry->response_code,
+                        'error_message'  => $logEntry->response_payload['message'] ?? 'Provider execution failed'
                     ]));
                 }
 
@@ -117,17 +150,16 @@ class ProcessBatchChunk implements ShouldQueue
                 ]));
             }
 
-            // --- SELF THROTTLING ---
+            // --- SELF THROTTLING & HEARTBEAT ---[cite: 21]
             if ($this->targetIntervalMs > 0) {
                 $elapsedMs = (microtime(true) - $rowStartTime) * 1000;
                 $remainingSleep = $this->targetIntervalMs - $elapsedMs;
 
                 if ($remainingSleep > 0) {
-                    usleep($remainingSleep * 1000);
+                    usleep((int) ($remainingSleep * 1000));
                 }
             }
 
-            // HEARTBEAT
             if ($uncommittedProcessed >= $this->heartbeat) {
                 $instance->increment('processed_records', $uncommittedProcessed);
                 $uncommittedProcessed = 0;
@@ -141,14 +173,13 @@ class ProcessBatchChunk implements ShouldQueue
             fclose($failedFile);
         }
 
-        // Final increments
+        // Final increments & completion sync...[cite: 21]
         if ($uncommittedProcessed > 0) {
             $instance->increment('processed_records', $uncommittedProcessed);
         }
         $instance->increment('success_records', $localSuccess);
         $instance->increment('failed_records', $localFailed);
 
-        // Finalize if last chunk
         $instance->refresh();
         if ($instance->processed_records >= $instance->total_records) {
             (new \App\Modules\Connectors\Services\BatchOrchestrator())->finalize($instance, 'completed', $this->traceId);
