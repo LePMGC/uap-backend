@@ -218,6 +218,8 @@ Route::middleware('auth:api')->group(function () {
                 // Update existing reimbursement record (Protected by Edit scopes)
                 Route::put('/{id}', [ReimbursementController::class, 'update']);
 
+                Route::get('/{id}/download-provisioning-report', [ReimbursementController::class, 'downloadProvisioningReport']);
+
                 // Supervisory Multi-Tier Authorization Hooks
                 Route::post('/{id}/approve', [ReimbursementController::class, 'approve']);
 

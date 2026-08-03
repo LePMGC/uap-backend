@@ -12,7 +12,7 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 class ReimbursementResource extends JsonResource
 {
     /**
-     * Helper to read row count from stored subscriber sheet
+     * Helper to read row count from stored subscriber sheet.
      */
     protected function getSubscriberCount(): ?int
     {
@@ -30,30 +30,26 @@ class ReimbursementResource extends JsonResource
             $absolutePath = Storage::disk('secure_reimbursements')->path($relativeDiskPath);
             $extension = strtolower(pathinfo($relativeDiskPath, PATHINFO_EXTENSION));
 
-            // For lightweight plain text or CSV files
             if (in_array($extension, ['csv', 'txt'])) {
                 $file = new \SplFileObject($absolutePath, 'r');
                 $file->setFlags(\SplFileObject::READ_AHEAD | \SplFileObject::SKIP_EMPTY | \SplFileObject::DROP_NEW_LINE);
                 $lines = 0;
 
-                foreach ($file as $index => $line) {
+                foreach ($file as $line) {
                     if (trim($line) !== '') {
                         $lines++;
                     }
                 }
 
-                // If file has a header row, subtract 1
                 return max(0, $lines > 0 ? $lines - 1 : 0);
             }
 
-            // For Excel sheets (.xlsx)
             if ($extension === 'xlsx') {
                 $spreadsheet = IOFactory::load($absolutePath);
                 $sheetData = $spreadsheet->getActiveSheet()->toArray();
                 $count = 0;
 
                 foreach ($sheetData as $index => $row) {
-                    // Skip header row and empty rows
                     if ($index === 0 || empty(array_filter($row))) {
                         continue;
                     }
@@ -121,35 +117,27 @@ class ReimbursementResource extends JsonResource
                 ]
             ),
 
-            'amount'             => $this->amount !== null
-                ? (float) $this->amount
-                : null,
-
-            'is_bulk'            => (bool) $this->is_bulk,
-            'file_reference_id'  => $this->file_reference_id,
+            'amount'            => $this->amount !== null ? (float) $this->amount : null,
+            'is_bulk'           => (bool) $this->is_bulk,
+            'file_reference_id' => $this->file_reference_id,
 
             'input_file_url' => $this->is_bulk && $this->file_reference_id
                 ? url("/api/operations/reimbursements/{$this->id}/download-input-file")
                 : null,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Bulk File Record Count
-            |--------------------------------------------------------------------------
-            */
             'input_file_records_count' => $this->getSubscriberCount(),
 
-            'required_tier'      => (int) $this->required_tier,
-            'status'             => $this->status,
-            'description'        => $this->description,
+            'required_tier' => (int) $this->required_tier,
+            'status'        => $this->status,
+            'description'   => $this->description,
 
             'provisioning_status' => $this->latest_provisioning_status
                 ?? $this->provisioningRequest?->status
                 ?? $this->provisioning_status
-                ?? null,
+                ?? 'NOT_STARTED',
 
-            'rejection_reason'   => $this->rejection_reason,
-            'reviewed_at'        => $this->reviewed_at?->toIso8601String(),
+            'rejection_reason' => $this->rejection_reason,
+            'reviewed_at'      => $this->reviewed_at?->toIso8601String(),
 
             'requested_by_user_id' => $this->requested_by_user_id,
             'reviewed_by_user_id'  => $this->reviewed_by_user_id,
@@ -164,6 +152,11 @@ class ReimbursementResource extends JsonResource
                 fn () => $this->reviewer?->name
             ),
 
+            /*
+            |--------------------------------------------------------------------------
+            | Cleaned Provisioning Execution Payload (Summary & Admin References Only)
+            |--------------------------------------------------------------------------
+            */
             'provisioning_execution' => $this->when(
                 $this->resource->relationLoaded('provisioningRequest'),
                 function () {
@@ -173,61 +166,51 @@ class ReimbursementResource extends JsonResource
                         return null;
                     }
 
-                    $executionDetails = [
-                        'id'             => $provRequest->id,
-                        'status'         => $provRequest->status,
-                        'execution_type' => $provRequest->execution_type,
-                        'started_at'     => $provRequest->created_at?->toIso8601String(),
-                        'completed_at'   => $provRequest->updated_at?->toIso8601String(),
-                        'metrics'        => null,
-                        'errors'         => [],
-                        'reports'        => null,
+                    $totalInput = $this->is_bulk ? ($this->getSubscriberCount() ?? 0) : 1;
+                    $summary = [
+                        'status'          => $provRequest->status,
+                        'execution_type'  => $provRequest->execution_type, // 'COMMAND' or 'BATCH'
+                        'started_at'      => $provRequest->created_at?->toIso8601String(),
+                        'completed_at'    => $provRequest->updated_at?->toIso8601String(),
+                        'total_input'     => $totalInput,
+                        'total_processed' => 0,
+                        'total_success'   => 0,
+                        'total_failed'    => 0,
+
+                        'admin_reference' => [
+                            'command_log_id'        => null,
+                            'batch_job_id' => null,
+                        ],
                     ];
 
-                    if ($provRequest->execution_type === 'COMMAND' && $provRequest->relationLoaded('executionCommandLog')) {
-                        $command = $provRequest->executionCommandLog;
+                    // 1. Single Execution (COMMAND)
+                    if ($provRequest->execution_type === 'COMMAND') {
+                        $commandLog = $provRequest->executionCommandLog;
 
-                        if ($command) {
-                            $executionDetails['metrics'] = [
-                                'total_records'   => 1,
-                                'success_count'   => $command->is_successful ? 1 : 0,
-                                'failure_count'   => $command->is_successful ? 0 : 1,
-                                'processed_count' => 1,
-                            ];
+                        if ($commandLog) {
+                            $summary['admin_reference']['command_log_id'] = $commandLog->id;
+                            $isSuccess = (bool) $commandLog->is_successful;
 
-                            if (!$command->is_successful) {
-                                $executionDetails['errors'][] = [
-                                    'row'        => 1,
-                                    'identifier' => $this->msisdn ?? 'N/A',
-                                    'reason'     => $command->getErrorMessage(),
-                                ];
-                            }
+                            $summary['total_processed'] = 1;
+                            $summary['total_success']   = $isSuccess ? 1 : 0;
+                            $summary['total_failed']    = $isSuccess ? 0 : 1;
                         }
                     }
 
-                    if ($provRequest->execution_type === 'BATCH' && $provRequest->relationLoaded('executionJobInstance')) {
+                    // 2. Bulk Execution (BATCH)
+                    if ($provRequest->execution_type === 'BATCH') {
                         $jobInstance = $provRequest->executionJobInstance;
 
                         if ($jobInstance) {
-                            $executionDetails['metrics'] = [
-                                'total_records'   => $jobInstance->total_records,
-                                'processed_count' => $jobInstance->processed_records,
-                                'success_count'   => $jobInstance->success_records,
-                                'failure_count'   => $jobInstance->failed_records,
-                                'progress_pct'    => $jobInstance->progress_percentage,
-                            ];
-
-                            $executionDetails['reports'] = [
-                                'summary_url' => url("/api/connectors/batch/instances/{$jobInstance->id}/summary"),
-                                'errors_csv'  => $jobInstance->failed_records > 0
-                                    ? url("/api/connectors/batch/instances/{$jobInstance->id}/export-errors")
-                                    : null,
-                                'full_report' => url("/api/connectors/batch/instances/{$jobInstance->id}/report"),
-                            ];
+                            $summary['admin_reference']['batch_job_id'] = $jobInstance->job_template_id;
+                            $summary['total_input']     = $jobInstance->total_records ?: $totalInput;
+                            $summary['total_processed'] = $jobInstance->processed_records;
+                            $summary['total_success']   = $jobInstance->success_records;
+                            $summary['total_failed']    = $jobInstance->failed_records;
                         }
                     }
 
-                    return $executionDetails;
+                    return $summary;
                 }
             ),
 

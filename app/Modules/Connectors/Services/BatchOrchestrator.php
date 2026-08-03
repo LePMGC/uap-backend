@@ -10,6 +10,7 @@ use League\Csv\Reader;
 use App\Modules\Core\Auditing\Services\UapLogger;
 use App\Modules\Connectors\Services\BatchReadinessService;
 use Maatwebsite\Excel\Facades\Excel;
+use App\Modules\Connectors\Exports\JobInstanceExport;
 use Throwable;
 use Exception;
 

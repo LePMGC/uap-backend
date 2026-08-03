@@ -266,23 +266,23 @@ class ReimbursementService
     public function approveReimbursement(Reimbursement $reimbursement, int $reviewerId): Reimbursement
     {
         $approvedReimbursement = DB::transaction(function () use ($reimbursement, $reviewerId) {
-            if ($reimbursement->status !== 'pending') { //[cite: 2]
-                throw new \RuntimeException('Only pending reimbursements can be approved.'); //[cite: 2]
+            if ($reimbursement->status !== 'pending') {
+                throw new \RuntimeException('Only pending reimbursements can be approved.');
             }
 
-            $reimbursement->update([ //[cite: 2]
-                'status'              => 'approved', //[cite: 2]
+            $reimbursement->update([
+                'status'              => 'approved',
                 'provisioning_status' => 'QUEUED',
-                'reviewed_by_user_id' => $reviewerId, //[cite: 2]
-                'reviewed_at'         => now(), //[cite: 2]
-                'rejection_reason'    => null, //[cite: 2]
-            ]); //[cite: 2]
+                'reviewed_by_user_id' => $reviewerId,
+                'reviewed_at'         => now(),
+                'rejection_reason'    => null,
+            ]);
 
-            return $reimbursement->fresh([ //[cite: 2]
-                'requester', //[cite: 2]
-                'reviewer', //[cite: 2]
-                'attachments', //[cite: 2]
-            ]); //[cite: 2]
+            return $reimbursement->fresh([
+                'requester',
+                'reviewer',
+                'attachments',
+            ]);
         });
 
         try {
@@ -311,6 +311,33 @@ class ReimbursementService
                 'reviewed_by_user_id' => $reviewerId,
                 'reviewed_at'         => now(),
                 'rejection_reason'    => $rejectionReason,
+            ]);
+
+            return $reimbursement->fresh([
+                'requester',
+                'reviewer',
+                'attachments',
+            ]);
+        });
+    }
+
+    /**
+     * Cancel a pending reimbursement request.
+     */
+    public function cancelReimbursement(Reimbursement $reimbursement, int $userId): Reimbursement
+    {
+        return DB::transaction(function () use ($reimbursement, $userId) {
+            if ($reimbursement->status !== 'pending') {
+                throw new \RuntimeException('Only pending reimbursements can be cancelled.');
+            }
+
+            if ((int) $reimbursement->requested_by_user_id !== $userId) {
+                throw new \RuntimeException('You are not authorized to cancel this reimbursement request.');
+            }
+
+            $reimbursement->update([
+                'status'              => 'cancelled',
+                'provisioning_status' => 'CANCELLED',
             ]);
 
             return $reimbursement->fresh([

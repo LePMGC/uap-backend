@@ -13,6 +13,9 @@ use Illuminate\Routing\Controllers\HasMiddleware;
 use Illuminate\Support\Facades\Storage;
 use App\Modules\Core\UserManagement\Models\User;
 use Illuminate\Validation\Rule;
+use App\Modules\Connectors\Models\JobInstance;
+use App\Modules\Connectors\Services\BatchOrchestrator;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ReimbursementController extends Controller implements HasMiddleware
 {
@@ -212,7 +215,7 @@ class ReimbursementController extends Controller implements HasMiddleware
 
             match ($status) {
                 // Group 1: Workflow Statuses
-                'pending', 'rejected' => $query->where('status', $status),
+                'pending', 'rejected', 'cancelled' => $query->where('status', $status),
 
                 // Group 2: Approved (All)
                 'approved' => $query->where('status', 'approved'),
@@ -296,31 +299,23 @@ class ReimbursementController extends Controller implements HasMiddleware
     }
 
     /**
-       * GET /operations/reimbursements/{id}
-       * Retrieve a detailed report regarding a specific submission instance.
-       */
+     * GET /api/operations/reimbursements/{id}
+     */
     public function show(string $id): JsonResponse
     {
         $reimbursement = Reimbursement::with([
             'attachments',
             'requester',
             'reviewer',
-            // Eager-load the provisioning context and connection logs
+            'bundle',
+            // Load relationships required for summary and admin reference IDs
             'provisioningRequest.executionCommandLog',
-            'provisioningRequest.executionBatchJob.instances'
+            'provisioningRequest.executionJobInstance'
         ])->findOrFail($id);
-
-        $user = auth()->user();
-
-        // Build the basic resource array representation
-        $resourceData = new ReimbursementResource($reimbursement);
-
-        // Convert to array if it's an Eloquent Resource, or capture the data array
-        $data = json_decode(json_encode($resourceData), true);
 
         return response()->json([
             'success' => true,
-            'data'    => $data
+            'data'    => new ReimbursementResource($reimbursement)
         ]);
     }
 
@@ -564,21 +559,53 @@ class ReimbursementController extends Controller implements HasMiddleware
     public function stats(): JsonResponse
     {
         $totals = Reimbursement::count();
-        $byStatus = [
-            'pending' => Reimbursement::where('status', 'pending')->count(),
-            'approved' => Reimbursement::where('status', 'approved')->count(),
-            'success' => Reimbursement::where('status', 'success')->count(),
-            'rejected' => Reimbursement::where('status', 'rejected')->count(),
-            'failed' => Reimbursement::where('status', 'failed')->count(),
-        ];
+
+        // 1. Count workflow statuses directly from the reimbursement table
+        $pending   = Reimbursement::where('status', 'pending')->count();
+        $rejected  = Reimbursement::where('status', 'rejected')->count();
+        $cancelled = Reimbursement::where('status', 'cancelled')->count();
+
+        // Helper subquery closure for fulfillment status counts
+        $countByProvisioningStatus = function (string $provStatus) {
+            return Reimbursement::where('status', 'approved')
+                ->whereExists(function ($sub) use ($provStatus) {
+                    $sub->select(\DB::raw(1))
+                        ->from('provisioning_requests')
+                        ->whereColumn('provisioning_requests.reimbursement_id', 'reimbursements.id')
+                        ->where('provisioning_requests.status', strtoupper($provStatus));
+                })->count();
+        };
+
+        // 2. Count fulfillment execution outcomes
+        $success = $countByProvisioningStatus('SUCCESS');
+        $failed  = $countByProvisioningStatus('FAILED');
+
+        // 3. Approved count = approved reimbursements that are not yet marked as SUCCESS or FAILED
+        $approved = Reimbursement::where('status', 'approved')
+            ->whereDoesntHave('provisioningRequest', function ($sub) {
+                $sub->whereIn('status', ['SUCCESS', 'FAILED']);
+            })->count();
+
+        // Calculate performance rate based on completed fulfillment requests
+        $completedExecutions = $success + $failed;
+        $successRate = $completedExecutions > 0
+            ? round(($success / $completedExecutions) * 100, 2)
+            : 0;
 
         return response()->json([
             'success' => true,
             'data' => [
                 'total' => $totals,
-                'by_status' => $byStatus,
+                'by_status' => [
+                    'pending'   => $pending,
+                    'approved'  => $approved,
+                    'success'   => $success,
+                    'rejected'  => $rejected,
+                    'failed'    => $failed,
+                    'cancelled' => $cancelled,
+                ],
                 'performance' => [
-                    'success_rate' => $totals > 0 ? round((Reimbursement::where('status', 'success')->count() / $totals) * 100, 2) : 100
+                    'success_rate' => $successRate,
                 ]
             ]
         ]);
@@ -670,6 +697,152 @@ class ReimbursementController extends Controller implements HasMiddleware
         return response()->json([
             'success' => true,
             'data' => $users
+        ]);
+    }
+
+
+    /**
+        * GET /api/operations/reimbursements/{id}/download-report
+        * Generate and stream high-level execution CSV report for non-technical operations users.
+    */
+    public function downloadProvisioningReport(string $id): \Symfony\Component\HttpFoundation\StreamedResponse|JsonResponse
+    {
+        $reimbursement = Reimbursement::with([
+            'bundle',
+            'provisioningRequest.executionCommandLog',
+            'provisioningRequest.executionJobInstance'
+        ])->findOrFail($id);
+
+        $provRequest = $reimbursement->provisioningRequest;
+
+        if (!$provRequest) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No provisioning request is linked to this reimbursement yet.'
+            ], 404);
+        }
+
+        $filename = "reimbursement_report_{$reimbursement->ticket_id}.csv";
+
+        return response()->streamDownload(function () use ($reimbursement, $provRequest) {
+            $handle = fopen('php://output', 'w');
+
+            // Output CSV Headers
+            fputcsv($handle, [
+                'MSISDN',
+                'Reimbursement Type',
+                'Item / Amount',
+                'Status',
+                'Message'
+            ]);
+
+            $defaultItem = $reimbursement->reimbursement_type === 'BUNDLE'
+                ? ($reimbursement->bundle?->name ?? 'Bundle')
+                : ($reimbursement->amount . ' FCFA');
+
+            // CASE 1: Single Reimbursement Execution
+            if ($provRequest->execution_type === 'COMMAND') {
+                $log = $provRequest->executionCommandLog;
+                $status = $log ? ($log->is_successful ? 'SUCCESS' : 'FAILED') : 'PENDING';
+                $error = $log && !$log->is_successful
+                    ? ($log->response_payload['error'] ?? $log->getErrorMessage() ?? 'Execution Failed')
+                    : 'Processed Successfully';
+
+                fputcsv($handle, [
+                    $reimbursement->msisdn ?? 'N/A',
+                    $reimbursement->reimbursement_type,
+                    $defaultItem,
+                    $status,
+                    $error
+                ]);
+            }
+            // CASE 2: Bulk Reimbursement Execution (BATCH)
+            elseif ($provRequest->execution_type === 'BATCH') {
+                $jobInstance = $provRequest->executionJobInstance;
+
+                if ($reimbursement->is_bulk && $reimbursement->file_reference_id) {
+                    $rows = $reimbursement->getUploadedRows();
+
+                    // Load execution results map from Batch storage if instance exists
+                    $successMsisdns = [];
+                    $failedMsisdns  = [];
+
+                    if ($jobInstance) {
+                        $batchStorageDir = config('connectors.batch.storage_path', 'jobs') . "/{$jobInstance->id}";
+
+                        // 1. Read successful execution records
+                        $successPath = "{$batchStorageDir}/results_success.csv";
+                        if (Storage::exists($successPath)) {
+                            $csv = \League\Csv\Reader::createFromPath(Storage::path($successPath), 'r');
+                            $csv->setHeaderOffset(0);
+                            foreach ($csv->getRecords() as $record) {
+                                // Capture MSISDN or primary identifier
+                                $key = $record['msisdn'] ?? $record['MSISDN'] ?? reset($record);
+                                if ($key) {
+                                    $successMsisdns[trim($key)] = $record['message'] ?? $record['response'] ?? 'Command executed successfully';
+                                }
+                            }
+                        }
+
+                        // 2. Read failed execution records
+                        $failedPath = "{$batchStorageDir}/results_failed.csv";
+                        if (Storage::exists($failedPath)) {
+                            $csv = \League\Csv\Reader::createFromPath(Storage::path($failedPath), 'r');
+                            $csv->setHeaderOffset(0);
+                            foreach ($csv->getRecords() as $record) {
+                                $key = $record['msisdn'] ?? $record['MSISDN'] ?? reset($record);
+                                if ($key) {
+                                    $failedMsisdns[trim($key)] = $record['error'] ?? $record['message'] ?? $record['reason'] ?? 'Command execution failed';
+                                }
+                            }
+                        }
+                    }
+
+                    // Loop through input sheet rows and match against command outcomes
+                    foreach ($rows as $row) {
+                        $msisdn = trim($row['msisdn'] ?? '');
+                        $item = ($reimbursement->distribution_mode === 'MANY_MANY' && !empty($row['value']))
+                            ? $row['value']
+                            : $defaultItem;
+
+                        // Determine actual row-level command execution status
+                        if (isset($failedMsisdns[$msisdn])) {
+                            $status = 'FAILED';
+                            $msg = $failedMsisdns[$msisdn];
+                        } elseif (isset($successMsisdns[$msisdn])) {
+                            $status = 'SUCCESS';
+                            $msg = $successMsisdns[$msisdn];
+                        } else {
+                            // Fallback if batch was overall successful or still pending
+                            if ($jobInstance && $jobInstance->status === 'COMPLETED') {
+                                $status = 'SUCCESS';
+                                $msg = 'Command executed successfully';
+                            } elseif ($jobInstance && $jobInstance->status === 'FAILED') {
+                                $status = 'FAILED';
+                                $msg = 'Batch execution failed';
+                            } else {
+                                $status = 'PENDING';
+                                $msg = 'Awaiting execution';
+                            }
+                        }
+
+                        fputcsv($handle, [
+                            $msisdn,
+                            $reimbursement->reimbursement_type,
+                            $item,
+                            $status,
+                            $msg
+                        ]);
+                    }
+                }
+            }
+
+            fclose($handle);
+        }, $filename, [
+            'Content-Type'  => 'text/csv',
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma'        => 'no-cache',
+            'Expires'       => '0',
         ]);
     }
 }
