@@ -24,7 +24,7 @@ class LeapLogsServiceProvider extends ServiceProvider
     public function boot(): void
     {
         // Load module routes
-        $this->loadRoutesFrom(__DIR__ . '/../../../../routes/api.php');
+        //$this->loadRoutesFrom(__DIR__ . '/../../../../routes/api.php');
 
         // If you decide to add specific views or migrations for LeapLogs later:
         // $this->loadViewsFrom(__DIR__ . '/../Resources/views', 'leap-logs');

@@ -196,9 +196,12 @@ class ProvisioningService
                     $profile->provisioning_provider_instance_id,
                     $profile->provisioning_command_id,
                     [
-                        'MSISDN'   => $profile->fundingAccount->msisdn, // Funding account / Requester MSISDN
-                        'bNumber'  => $reimb->msisdn,                  // Target recipient MSISDN
-                        'offerId'  => $reimb->target_product_id         // Target product / offer ID
+                        'MSISDN'   => $profile->fundingAccount->msisdn,
+                        'bNumber'  => $reimb->msisdn,
+                        'offerId'  => $reimb->bundle->offer_id,
+                        'requestType' => 'OTHERS',
+                        'paymentType' => 'AIRTIME',
+                        'extRequest' => now()->format('YmdHis') . rand(1000, 9999)
                     ],
                     $actingUserId,
                     null,

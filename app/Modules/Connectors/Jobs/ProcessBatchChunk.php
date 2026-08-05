@@ -35,7 +35,7 @@ class ProcessBatchChunk implements ShouldQueue
      * @param int $commandId
      * @param string|null $traceId
      * @param int $heartbeat
-     * @param int $targetIntervalMs  <-- Added this
+     * @param int $targetIntervalMs
      */
     public function __construct(
         protected $instance,
@@ -43,7 +43,7 @@ class ProcessBatchChunk implements ShouldQueue
         protected int $commandId,
         protected ?string $traceId = null,
         protected int $heartbeat = 10,
-        protected int $targetIntervalMs = 0 // <-- Initialize property here
+        protected int $targetIntervalMs = 0
     ) {
     }
 
@@ -52,13 +52,17 @@ class ProcessBatchChunk implements ShouldQueue
      */
     public function handle(
         CommandExecutor $executor,
-        DynamicProfileResolver $profileResolver // 👈 Inject dynamic profile resolver
+        DynamicProfileResolver $profileResolver
     ): void {
         $instance = JobInstance::with(['template.command'])->find($this->instance->id);
 
         if (!$instance || ($this->batch() && $this->batch()->cancelled())) {
             return;
         }
+
+        // Key mapping blueprint by param key for fast lookups in the loop
+        $blueprint = collect($instance->template->command->mapping_blueprint ?? [])
+            ->keyBy('key');
 
         // Determine if this batch job is running in MANY_MANY distribution mode
         $requestId = $instance->template->source_config['provisioning_request_id']
@@ -88,6 +92,18 @@ class ProcessBatchChunk implements ShouldQueue
                     $val = ($config['mode'] ?? 'static') === 'dynamic'
                         ? ($row[$config['value']] ?? null)
                         : ($config['value'] ?? null);
+
+                    // Cast values based on command mapping blueprint types
+                    if ($val !== null && isset($blueprint[$paramName])) {
+                        $expectedType = strtolower($blueprint[$paramName]['type'] ?? '');
+
+                        if (in_array($expectedType, ['integer', 'int', 'i4']) && is_numeric($val)) {
+                            $val = (int) $val;
+                        } elseif (in_array($expectedType, ['boolean', 'bool'])) {
+                            $val = filter_var($val, FILTER_VALIDATE_BOOLEAN);
+                        }
+                    }
+
                     $resolvedParams[$paramName] = $val;
                 }
 
@@ -96,7 +112,7 @@ class ProcessBatchChunk implements ShouldQueue
                     Arr::set($nestedParams, $key, $value);
                 }
 
-                // Defaults from template[cite: 21]
+                // Defaults from template
                 $targetProviderId = (int) $instance->template->provider_instance_id;
                 $targetCommandId  = (int) $this->commandId;
 
@@ -110,14 +126,14 @@ class ProcessBatchChunk implements ShouldQueue
                         throw new \Exception("Missing required offerId in batch record.");
                     }
 
-                    // Resolve matching ProvisioningProfile dynamically per row[cite: 13]
+                    // Resolve matching ProvisioningProfile dynamically per row
                     $profile = $profileResolver->resolveForOfferId($offerId);
 
                     $targetProviderId = $profile->provisioning_provider_instance_id;
                     $targetCommandId  = $profile->provisioning_command_id;
                 }
 
-                // Execution via CommandExecutor[cite: 20, 21]
+                // Execution via CommandExecutor
                 $logEntry = $executor->execute(
                     $targetProviderId,
                     $targetCommandId,
@@ -150,7 +166,7 @@ class ProcessBatchChunk implements ShouldQueue
                 ]));
             }
 
-            // --- SELF THROTTLING & HEARTBEAT ---[cite: 21]
+            // --- SELF THROTTLING & HEARTBEAT ---
             if ($this->targetIntervalMs > 0) {
                 $elapsedMs = (microtime(true) - $rowStartTime) * 1000;
                 $remainingSleep = $this->targetIntervalMs - $elapsedMs;
@@ -173,7 +189,7 @@ class ProcessBatchChunk implements ShouldQueue
             fclose($failedFile);
         }
 
-        // Final increments & completion sync...[cite: 21]
+        // Final increments & completion sync
         if ($uncommittedProcessed > 0) {
             $instance->increment('processed_records', $uncommittedProcessed);
         }

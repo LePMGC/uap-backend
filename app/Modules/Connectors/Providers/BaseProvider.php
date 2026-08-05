@@ -118,57 +118,64 @@ abstract class BaseProvider
      * Layered Heartbeat Logic
      */
     public function heartbeat(int $instanceId): void
-    {
-        $status = false;
-        $errorMessage = null;
-        $host = $this->config['host'] ?? null;
-        $port = $this->config['port'] ?? null;
+{
+    $status = false;
+    $errorMessage = null;
 
-        try {
-            if (!$host) {
-                throw new \Exception("Configuration Error: Missing Host IP");
-            }
+    $host = $this->config['host'] ?? null;
+    $port = $this->config['port'] ?? null;
 
-            // Level 1: Ping (ICMP)
-            if (!$this->ping($host)) {
-                throw new \Exception("Network Level: Host Unreachable (Ping Failed)");
-            }
-
-            // Level 2: Telnet/Port Check (TCP)
-            if ($port && !$this->isPortOpen($host, $port)) {
-                throw new \Exception("Transport Level: Port $port Refused (Service Down)");
-            }
-
-            // Level 3: Protocol/Application Check
-            if (!$this->checkHealth()) {
-                throw new \Exception("Application Level: Protocol Handshake Failed");
-            }
-
-            $status = true;
-        } catch (\Exception $e) {
-            $errorMessage = $e->getMessage();
-            $status = false;
+    try {
+        if (!$host) {
+            throw new \Exception("Configuration Error: Missing Host IP");
         }
 
-        // Update the Database with the specific error message
-        \App\Modules\Connectors\Models\ProviderInstance::where('id', $instanceId)
-            ->update([
-                'is_active' => $status,
-                'last_error_message' => $errorMessage,
-                'last_heartbeat_at' => now(),
-            ]);
+        // Level 1: TCP connectivity
+        if ($port && !$this->isPortOpen($host, $port)) {
+            throw new \Exception("Transport Level: Port $port Refused (Service Down)");
+        }
+
+        // Level 2: Application health
+        if (!$this->checkHealth()) {
+            throw new \Exception("Application Level: Protocol Handshake Failed");
+        }
+
+        $status = true;
+
+    } catch (\Exception $e) {
+        $errorMessage = $e->getMessage();
     }
+
+    \App\Modules\Connectors\Models\ProviderInstance::where('id', $instanceId)->update([
+        'is_active' => $status,
+        'last_error_message' => $errorMessage,
+        'last_heartbeat_at' => now(),
+    ]);
+}
 
     protected function ping(string $host): bool
-    {
-        // Executes a single ping with a 1-second timeout
-        $command = PHP_OS_FAMILY === 'Windows'
-            ? "ping -n 1 -w 1000 $host"
-            : "ping -c 1 -W 1 $host";
+{
+    \Log::info('PING DEBUG START', [
+        'host_received' => $host,
+        'php_user' => get_current_user(),
+        'uid' => getmyuid(),
+    ]);
 
-        exec($command, $output, $result);
-        return $result === 0;
-    }
+    $command = PHP_OS_FAMILY === 'Windows'
+        ? "ping -n 1 -w 1000 $host"
+        : "ping -c 1 -W 1 $host";
+
+    exec($command . " 2>&1", $output, $result);
+
+    \Log::info('PING DEBUG RESULT', [
+        'command' => $command,
+        'result' => $result,
+        'output' => $output,
+    ]);
+
+    return $result === 0;
+}
+
 
     protected function isPortOpen(string $host, int $port): bool
     {
@@ -198,12 +205,17 @@ abstract class BaseProvider
                 throw new \Exception("Host configuration missing.");
             }
 
-            // Level 1-3 Checks
-            if ($this->ping($host) &&
-                (!$port || $this->isPortOpen($host, $port)) &&
-                $this->checkHealth()) {
-                $isAlive = true;
+            // Level 1: TCP Port Check (Replacing Ping with Port Check)
+            if ($port && !$this->isPortOpen($host, $port)) {
+                throw new \Exception("Transport Level: Port $port Refused (Service Down)");
             }
+
+            // Level 2: Application health
+            if (!$this->checkHealth()) {
+                throw new \Exception("Application Level: Protocol Handshake Failed");
+            }
+
+            $isAlive = true;
         } catch (\Exception $e) {
             $isAlive = false;
         }

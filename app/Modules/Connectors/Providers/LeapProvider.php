@@ -28,7 +28,7 @@ class LeapProvider extends BaseProvider
         // 1. System Parameter Pool
         $pool = [
             'transactionId' => $this->generateTransactionId(),
-            'channelName'   => $this->config['channel_name'] ?? 'UAP-Server',
+            'channelName'   => $this->config['channel_name'] ?? 'UAP',
         ];
 
         // 2. Resolve default parameters from command blueprint template
@@ -119,7 +119,7 @@ class LeapProvider extends BaseProvider
             ->timeout(10)
             ->connectTimeout(5)
             ->withHeaders([
-                'User-Agent'   => $this->config['user_agent'] ?? 'UAP-Server/1.0',
+                'User-Agent'   => $this->config['user_agent'] ?? 'UAP/1.0',
                 'Content-Type' => 'application/json',
             ])
             ->get($url, $queryParams);
@@ -220,7 +220,7 @@ class LeapProvider extends BaseProvider
         }
 
         if (str_contains($rawPayload, 'channelName=')) {
-            $detected['channelName'] = 'UAP-Server';
+            $detected['channelName'] = 'UAP';
         }
 
         return $detected;
@@ -251,7 +251,7 @@ class LeapProvider extends BaseProvider
             // System values pool configuration mapping
             $systemKeysPool = [
                 'transactionId' => '{auto_gen_id}',
-                'channelName'   => 'UAP-Server'
+                'channelName'   => 'UAP'
             ];
 
             foreach ($queryParams as $key => $value) {
