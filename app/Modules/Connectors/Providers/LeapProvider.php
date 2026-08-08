@@ -297,8 +297,43 @@ class LeapProvider extends BaseProvider
 
     public function extractIdentifier(string $rawPayload): ?string
     {
-        $parsed = $this->parseSamplePayload($rawPayload);
-        return $parsed['params']['MSISDN'] ?? $parsed['params']['bNumber'] ?? null;
+        if (empty(trim($rawPayload))) {
+            return null;
+        }
+
+        try {
+            $urlInfo = parse_url($rawPayload);
+
+            if ($urlInfo === false || empty($urlInfo['query'])) {
+                return null;
+            }
+
+            $queryParams = [];
+
+            parse_str($urlInfo['query'], $queryParams);
+
+            // LEAP priority:
+            // 1. bNumber
+            // 2. MSISDN
+            $identifier = $queryParams['bNumber']
+                ?? $queryParams['MSISDN']
+                ?? null;
+
+            if ($identifier === null) {
+                return null;
+            }
+
+            $identifier = trim((string) $identifier);
+
+            return $identifier !== '' ? $identifier : null;
+
+        } catch (\Throwable $e) {
+            \Log::warning(
+                "LEAP identifier extraction failed: " . $e->getMessage()
+            );
+
+            return null;
+        }
     }
 
     /**

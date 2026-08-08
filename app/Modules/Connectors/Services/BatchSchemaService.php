@@ -10,8 +10,15 @@ use App\Modules\Core\Auditing\Services\UapLogger;
 
 class BatchSchemaService
 {
+
+
     /**
      * Direct discovery for manual file uploads.
+     *
+     * Returns:
+     * - headers
+     * - preview rows
+     * - total_records (number of subscriber/data rows, excluding header)
      */
     public function getSchemaFromUpload($file, int $limit = 5): array
     {
@@ -21,100 +28,150 @@ class BatchSchemaService
 
             $headers = $csv->getHeader();
             $rows = [];
+            $totalRecords = 0;
 
-            $records = $csv->getRecords();
-            $count = 0;
-            foreach ($records as $record) {
-                if ($count >= $limit) {
-                    break;
+            foreach ($csv->getRecords() as $record) {
+                // Count every data row/subscriber
+                $totalRecords++;
+
+                // Only keep the requested number of preview rows
+                if (count($rows) < $limit) {
+                    $rows[] = $record;
                 }
-                $rows[] = $record;
-                $count++;
             }
 
             return [
-                'headers' => $headers,
-                'rows'    => $rows
+                'headers'       => $headers,
+                'rows'          => $rows,
+                'total_records' => $totalRecords,
             ];
+
         } catch (\Exception $e) {
             Log::error("Upload Schema Discovery Failed: " . $e->getMessage());
+
             throw $e;
         }
     }
 
+
     /**
-     * Discovers schema (headers + sample rows) from a remote DataSource (DB, SFTP, API).
+     * Discovers schema (headers + sample rows + total record count)
+     * from a remote DataSource (DB, SFTP, API).
      */
-    /**
-         * Discovers schema (headers + sample rows) from a remote DataSource.
-         */
-    public function discoverSchema(DataSource $dataSource, array $requestConfig, int $limit = 5): array
-    {
+    public function discoverSchema(
+        DataSource $dataSource,
+        array $requestConfig,
+        int $limit = 5
+    ): array {
         try {
-            \App\Modules\Core\Auditing\Services\UapLogger::info('SchemaService', 'REMOTE_SCHEMA_DISCOVERY_STARTED', [
-                'source_type' => $dataSource->type,
-                'source_id'   => $dataSource->id
-            ]);
+            \App\Modules\Core\Auditing\Services\UapLogger::info(
+                'SchemaService',
+                'REMOTE_SCHEMA_DISCOVERY_STARTED',
+                [
+                    'source_type' => $dataSource->type,
+                    'source_id'   => $dataSource->id,
+                ]
+            );
 
             $connector = DataSourceFactory::make($dataSource->type);
 
             $connectionSettings = is_array($dataSource->connection_settings)
                 ? $dataSource->connection_settings
-                : json_decode($dataSource->connection_settings ?? '{}', true);
+                : json_decode(
+                    $dataSource->connection_settings ?? '{}',
+                    true
+                );
 
             // 1. Handle Database Mode logic specifically
             if ($dataSource->type === 'database') {
                 $mode = $requestConfig['mode'] ?? 'table';
 
                 if ($mode === 'query' && empty($requestConfig['query'])) {
-                    throw new \Exception("SQL Query is required when mode is set to 'query'.");
+                    throw new \Exception(
+                        "SQL Query is required when mode is set to 'query'."
+                    );
                 }
 
                 if ($mode === 'table' && empty($requestConfig['table'])) {
-                    throw new \Exception("Table name is required when mode is set to 'table'.");
+                    throw new \Exception(
+                        "Table name is required when mode is set to 'table'."
+                    );
                 }
             }
 
             // 2. Merge credentials with the specific request config
-            $fullConfig = array_merge($connectionSettings, $requestConfig);
+            $fullConfig = array_merge(
+                $connectionSettings,
+                $requestConfig
+            );
 
             // 3. Fetch data stream
             $iterator = $connector->fetchData($fullConfig);
 
             $headers = [];
             $rows = [];
-            $count = 0;
+            $totalRecords = 0;
 
+            // 4. Iterate through the complete data source.
+            //
+            // We only store `$limit` rows for the preview,
+            // but continue iterating so we can determine the
+            // actual number of records/subscribers.
             foreach ($iterator as $row) {
                 // Convert row to associative array
-                $rowData = json_decode(json_encode($row), true);
+                $rowData = json_decode(
+                    json_encode($row),
+                    true
+                );
 
+                // Discover headers from the first record
                 if (empty($headers)) {
                     $headers = array_keys($rowData);
                 }
 
-                if ($count < $limit) {
+                // Count every record
+                $totalRecords++;
+
+                // Only keep the requested number of preview rows
+                if (count($rows) < $limit) {
                     $rows[] = $rowData;
-                    $count++;
-                } else {
-                    break;
                 }
             }
 
+            // No records were returned
             if (empty($headers)) {
-                throw new \Exception("No data found to discover headers. Ensure the table/query returns results.");
+                throw new \Exception(
+                    "No data found to discover headers. Ensure the table/query returns results."
+                );
             }
 
+            \App\Modules\Core\Auditing\Services\UapLogger::info(
+                'SchemaService',
+                'REMOTE_SCHEMA_DISCOVERY_COMPLETED',
+                [
+                    'source_type'   => $dataSource->type,
+                    'source_id'     => $dataSource->id,
+                    'total_records' => $totalRecords,
+                    'preview_rows'  => count($rows),
+                ]
+            );
+
             return [
-                'headers' => $headers,
-                'rows'    => $rows
+                'headers'       => $headers,
+                'rows'          => $rows,
+                'total_records' => $totalRecords,
             ];
 
         } catch (\Exception $e) {
-            \App\Modules\Core\Auditing\Services\UapLogger::error('SchemaService', 'REMOTE_SCHEMA_DISCOVERY_FAILED', [
-                'type'  => $dataSource->type,
-                'error' => $e->getMessage()
-            ]);
+            \App\Modules\Core\Auditing\Services\UapLogger::error(
+                'SchemaService',
+                'REMOTE_SCHEMA_DISCOVERY_FAILED',
+                [
+                    'type'  => $dataSource->type,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
             throw $e;
         }
     }

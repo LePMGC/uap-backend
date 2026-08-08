@@ -702,9 +702,9 @@ class ReimbursementController extends Controller implements HasMiddleware
 
 
     /**
-        * GET /api/operations/reimbursements/{id}/download-report
-        * Generate and stream high-level execution CSV report for non-technical operations users.
-    */
+     * GET /api/operations/reimbursements/{id}/download-report
+     * Generate and stream high-level execution CSV report for non-technical operations users.
+     */
     public function downloadProvisioningReport(string $id): \Symfony\Component\HttpFoundation\StreamedResponse|JsonResponse
     {
         $reimbursement = Reimbursement::with([
@@ -724,8 +724,19 @@ class ReimbursementController extends Controller implements HasMiddleware
 
         $filename = "reimbursement_report_{$reimbursement->ticket_id}.csv";
 
+        $headers = [
+            'Content-Type'        => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => "attachment; filename=\"{$filename}\"",
+            'Cache-Control'       => 'no-cache, no-store, must-revalidate',
+            'Pragma'              => 'no-cache',
+            'Expires'             => '0',
+        ];
+
         return response()->streamDownload(function () use ($reimbursement, $provRequest) {
             $handle = fopen('php://output', 'w');
+
+            // Prepend UTF-8 BOM for Excel compatibility
+            fprintf($handle, chr(0xEF) . chr(0xBB) . chr(0xBF));
 
             // Output CSV Headers
             fputcsv($handle, [
@@ -776,10 +787,9 @@ class ReimbursementController extends Controller implements HasMiddleware
                             $csv = \League\Csv\Reader::createFromPath(Storage::path($successPath), 'r');
                             $csv->setHeaderOffset(0);
                             foreach ($csv->getRecords() as $record) {
-                                // Capture MSISDN or primary identifier
                                 $key = $record['msisdn'] ?? $record['MSISDN'] ?? reset($record);
                                 if ($key) {
-                                    $successMsisdns[trim($key)] = $record['message'] ?? $record['response'] ?? 'Command executed successfully';
+                                    $successMsisdns[trim($key)] = $record['error_message'] ?? $record['message'] ?? $record['response'] ?? 'Command executed successfully';
                                 }
                             }
                         }
@@ -792,7 +802,7 @@ class ReimbursementController extends Controller implements HasMiddleware
                             foreach ($csv->getRecords() as $record) {
                                 $key = $record['msisdn'] ?? $record['MSISDN'] ?? reset($record);
                                 if ($key) {
-                                    $failedMsisdns[trim($key)] = $record['error'] ?? $record['message'] ?? $record['reason'] ?? 'Command execution failed';
+                                    $failedMsisdns[trim($key)] = $record['error_message'] ?? $record['error'] ?? $record['message'] ?? $record['reason'] ?? 'Command execution failed';
                                 }
                             }
                         }
@@ -814,10 +824,11 @@ class ReimbursementController extends Controller implements HasMiddleware
                             $msg = $successMsisdns[$msisdn];
                         } else {
                             // Fallback if batch was overall successful or still pending
-                            if ($jobInstance && $jobInstance->status === 'COMPLETED') {
+                            $jobStatus = strtolower($jobInstance?->status ?? '');
+                            if ($jobStatus === 'completed') {
                                 $status = 'SUCCESS';
                                 $msg = 'Command executed successfully';
-                            } elseif ($jobInstance && $jobInstance->status === 'FAILED') {
+                            } elseif ($jobStatus === 'failed') {
                                 $status = 'FAILED';
                                 $msg = 'Batch execution failed';
                             } else {
@@ -838,11 +849,6 @@ class ReimbursementController extends Controller implements HasMiddleware
             }
 
             fclose($handle);
-        }, $filename, [
-            'Content-Type'  => 'text/csv',
-            'Cache-Control' => 'no-cache, no-store, must-revalidate',
-            'Pragma'        => 'no-cache',
-            'Expires'       => '0',
-        ]);
+        }, $filename, $headers);
     }
 }

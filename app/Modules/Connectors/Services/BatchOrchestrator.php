@@ -11,6 +11,7 @@ use App\Modules\Core\Auditing\Services\UapLogger;
 use App\Modules\Connectors\Services\BatchReadinessService;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Modules\Connectors\Exports\JobInstanceExport;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 use Exception;
 
@@ -21,16 +22,28 @@ class BatchOrchestrator
      */
     public function execute(JobInstance $instance, ?string $traceId = null): void
     {
-        // Retrieve linked ProvisioningRequest/Reimbursement to detect distribution mode
-        $requestId = $instance->template->source_config['provisioning_request_id']
-                  ?? $instance->instance_parameters['provisioning_request_id']
-                  ?? null;
+        // Increase memory limit for big batch operations
+        ini_set('memory_limit', '512M');
 
-        $request = $requestId ? \App\Modules\Operations\Models\ProvisioningRequest::with('reimbursement')->find($requestId) : null;
+        Log::info('[BatchOrchestrator] Execute started', [
+            'instance_id' => $instance->id,
+            'trace_id'    => $traceId,
+            'memory_mb'   => round(memory_get_usage(true) / 1024 / 1024, 2),
+        ]);
+
+        // Retrieve linked ProvisioningRequest/Reimbursement
+        $requestId = $instance->template->source_config['provisioning_request_id']
+                ?? $instance->instance_parameters['provisioning_request_id']
+                ?? null;
+
+        $request = $requestId
+            ? \App\Modules\Operations\Models\ProvisioningRequest::with('reimbursement')->find($requestId)
+            : null;
+
         $isManyMany = $request?->reimbursement?->distribution_mode === 'MANY_MANY';
 
-        // PRE EXECUTION VALIDATION
-        // If MANY_MANY, pass null for provider & command IDs so readiness checks core platform components only
+        Log::info('[BatchOrchestrator] Running readiness check');
+
         $readiness = app(BatchReadinessService::class)->check(
             false,
             $isManyMany ? null : $instance->template->provider_instance_id,
@@ -39,55 +52,24 @@ class BatchOrchestrator
         );
 
         if (!$readiness['ready']) {
+            Log::error('[BatchOrchestrator] Readiness check failed', ['checks' => $readiness['checks']]);
             $instance->update([
-                'status' => 'failed',
-                'completed_at' => now(),
+                'status'         => 'failed',
+                'completed_at'   => now(),
                 'failure_reason' => 'Platform readiness check failed.'
             ]);
-
             throw new Exception('Batch cannot start because platform prerequisites are not satisfied.');
         }
 
+        Log::info('[BatchOrchestrator] Loading template relations');
+
         $instance->load('template.command', 'template.providerInstance');
-        $command = $instance->template->command;
+        $command  = $instance->template->command;
         $provider = $instance->template->providerInstance;
 
         if (!$command || !$provider) {
-            throw new \Exception("Batch template is missing Command or Provider Instance.");
+            throw new Exception("Batch template is missing Command or Provider Instance.");
         }
-
-        // --- DYNAMIC DIMENSIONING LOGIC ---
-        $tpsLimit = $provider->tps_limit ?? 50;
-        $latency  = max($provider->latency_ms, 50); // Floor at 50ms to prevent div by zero
-        $health   = $provider->health_score ?? 100;
-
-        // 1. Calculate how many requests one worker can do per second
-        $reqPerWorkerPerSec = 1000 / $latency;
-
-        // 2. Adjust TPS Limit based on Health Score (Safety Brake)
-        // If health is below 80, we throttle the allowed TPS to 60% of capacity
-        if ($health < 80) {
-            $tpsLimit = $tpsLimit * 0.6;
-        }
-
-        // 3. Determine Concurrency & Throttling Delay
-        // We aim to utilize Horizon workers efficiently without exceeding TPS
-        // delay_ms = (1000 / (Target TPS / Number of Workers)) - Latency
-        // For simplicity in the worker, we calculate the Target Interval per request
-        $targetIntervalMs = 1000 / $tpsLimit;
-
-        // 4. Determine Chunk Size & Heartbeat
-        // If latency is high (>1s), use small chunks to avoid Horizon timeouts
-        $chunkSize = ($latency > 1000) ? 20 : 100;
-        $heartbeat = ($tpsLimit > 100) ? 50 : 10; // Frequent updates for slow jobs, less for fast ones
-        // ----------------------------------
-
-        UapLogger::info('BatchEngine', 'JOB_STARTED_WITH_DYNAMIC_SCALING', [
-            'instance_id' => $instance->id,
-            'tps_target'  => $tpsLimit,
-            'latency'     => $latency . 'ms',
-            'chunk_size'  => $chunkSize
-        ], $traceId);
 
         $instance->update([
             'status'     => 'processing',
@@ -96,49 +78,103 @@ class BatchOrchestrator
 
         $dir = "jobs/{$instance->id}";
         Storage::makeDirectory($dir);
+        $fullPath = Storage::path($dir);
+
+        @chmod($fullPath, 0775);
+        @chgrp($path, $this->getBatchFilesGroup());
 
         try {
-            $this->ingestToLocalFile($instance, $dir);
+            Log::info('[1] Starting ingestToLocalFile()');
+
+            // Step 1: Ingest file and get total row count
+            $totalRecords = $this->ingestToLocalFile($instance, $dir);
+
+            Log::info('[2] ingestToLocalFile() complete', ['total_records' => $totalRecords]);
+
+            // Calculate dynamic scaling parameters based on total records
+            $chunkSize = $this->calculateDynamicChunkSize($totalRecords);
+            $heartbeat = $this->calculateDynamicHeartbeat($totalRecords);
+
+            $tpsLimit  = $provider->tps_limit ?? 50;
+            $latency   = max($provider->latency_ms, 50);
+            $targetIntervalMs = 1000 / $tpsLimit;
+
+            Log::info('[BatchOrchestrator] Scaling dynamically calculated', [
+                'total_records'      => $totalRecords,
+                'chunk_size'         => $chunkSize,
+                'heartbeat'          => $heartbeat,
+                'target_interval_ms' => $targetIntervalMs,
+            ]);
+
             $headers = $this->getCsvHeaders($dir);
             $this->initializeResultFiles($dir, $headers);
 
-            $reader = Reader::createFromPath(Storage::path("{$dir}/source.csv"), 'r');
-            $reader->setHeaderOffset(0);
+            // Step 2: Build lightweight job descriptors with offset & limit
+            $jobs   = [];
+            $offset = 0;
 
-            $jobs = [];
-            $currentChunk = [];
+            while ($offset < $totalRecords) {
+                $jobs[] = new ProcessBatchChunk(
+                    $instance,
+                    $dir,
+                    $offset,
+                    $chunkSize,
+                    $command->id,
+                    $traceId,
+                    $heartbeat,
+                    (int)$targetIntervalMs
+                );
 
-            foreach ($reader->getRecords() as $record) {
-                $currentChunk[] = $record;
-
-                if (count($currentChunk) === $chunkSize) {
-                    $jobs[] = new ProcessBatchChunk(
-                        $instance,
-                        $currentChunk,
-                        $command->id,
-                        $traceId,
-                        $heartbeat,
-                        (int) $targetIntervalMs // Pass target pace to worker
-                    );
-                    $currentChunk = [];
-                }
+                $offset += $chunkSize;
             }
 
-            if (!empty($currentChunk)) {
-                $jobs[] = new ProcessBatchChunk($instance, $currentChunk, $command->id, $traceId, $heartbeat, (int) $targetIntervalMs);
-            }
+            Log::info('[6] Finished building jobs', [
+                'total_records' => $totalRecords,
+                'jobs_created'  => count($jobs),
+                'memory_mb'     => round(memory_get_usage(true) / 1024 / 1024, 2),
+            ]);
+
+            Log::info('[7] Dispatching Bus::batch()');
 
             Bus::batch($jobs)
                 ->then(function ($batch) use ($instance, $traceId) {
-                    (new BatchOrchestrator())->finalize($instance, 'completed', $traceId);
+                    Log::info('[8] Batch completed callback');
+                    (new BatchOrchestrator())->finalize(
+                        $instance,
+                        'completed',
+                        $traceId
+                    );
                 })
                 ->allowFailures()
                 ->name("Batch-{$instance->id}")
                 ->dispatch();
 
+            Log::info('[9] Bus::batch dispatched successfully');
+
         } catch (Throwable $e) {
-            $instance->update(['status' => 'failed', 'completed_at' => now()]);
-            UapLogger::error('BatchEngine', 'JOB_INIT_FAILED', ['error' => $e->getMessage()], $traceId);
+            Log::error('[BatchOrchestrator] Exception during execute()', [
+                'message'  => $e->getMessage(),
+                'file'     => $e->getFile(),
+                'line'     => $e->getLine(),
+                'trace_id' => $traceId,
+            ]);
+
+            $instance->update([
+                'status'       => 'failed',
+                'completed_at' => now()
+            ]);
+
+            UapLogger::error(
+                'BatchEngine',
+                'JOB_INIT_FAILED',
+                [
+                    'error' => $e->getMessage(),
+                    'file'  => $e->getFile(),
+                    'line'  => $e->getLine(),
+                ],
+                $traceId
+            );
+
             throw $e;
         }
     }
@@ -158,7 +194,7 @@ class BatchOrchestrator
     }
 
     /**
-     * Scale heartbeat so the DB isn't hammered by 40+ concurrent workers.
+     * Scale heartbeat so the DB isn't hammered by concurrent workers.
      */
     protected function calculateDynamicHeartbeat(int $total): int
     {
@@ -183,8 +219,6 @@ class BatchOrchestrator
             throw new Exception("Mapping validation failed: No columns have been mapped.");
         }
 
-        // Since parameters aren't in the DB, we check if the mapping contains
-        // at least the essential keys required to build the payload.
         foreach ($mapping as $param => $config) {
             if (!isset($config['mode']) || !isset($config['value'])) {
                 throw new Exception("Mapping validation failed: Parameter '{$param}' has an invalid structure.");
@@ -193,24 +227,38 @@ class BatchOrchestrator
     }
 
     /**
-     * Initializes the result files with original headers + audit metadata.
+     * Initializes the result files with original headers + audit metadata,
+     * setting group write permissions (0664, uaplog).
      */
     protected function initializeResultFiles(string $dir, array $headers): void
     {
-        // We add 'command_log_id' so users can trace individual rows in the audit logs
         $resHeaders = array_merge($headers, [
             'command_log_id',
             'response_code',
+            'error_message',
         ]);
 
         $headerLine = implode(',', $resHeaders) . PHP_EOL;
 
-        Storage::put("{$dir}/results_success.csv", $headerLine);
-        Storage::put("{$dir}/results_failed.csv", $headerLine);
+        $successRel = "{$dir}/results_success.csv";
+        $failedRel  = "{$dir}/results_failed.csv";
+
+        Storage::put($successRel, $headerLine);
+        Storage::put($failedRel, $headerLine);
+
+        // Assign uaplog group & 0664 permissions so workers can open in append mode
+        $successPath = Storage::path($successRel);
+        $failedPath  = Storage::path($failedRel);
+
+        @chmod($successPath, 0664);
+        @chgrp($path, $this->getBatchFilesGroup());
+
+        @chmod($failedPath, 0664);
+        @chgrp($path, $this->getBatchFilesGroup());
     }
 
     /**
-     * Moves the source file to the job's permanent directory.
+     * Moves the source file to the job's permanent directory and updates permissions.
      */
     protected function ingestToLocalFile(JobInstance $instance, string $dir): int
     {
@@ -225,13 +273,24 @@ class BatchOrchestrator
         $destination = "{$dir}/source.csv";
         Storage::copy($tempPath, $destination);
 
-        $reader = Reader::createFromPath(Storage::path($destination), 'r');
+        $sourcePath = Storage::path($destination);
+        @chmod($sourcePath, 0664);
+        @chgrp($path, $this->getBatchFilesGroup());
+
+        $reader = Reader::createFromPath($sourcePath, 'r');
         if ($sourceConfig['has_header'] ?? true) {
             $reader->setHeaderOffset(0);
         }
 
-        $count = count(iterator_to_array($reader->getRecords()));
-        $instance->update(['total_records' => $count]);
+        $count = 0;
+
+        foreach ($reader->getRecords() as $_) {
+            $count++;
+        }
+
+        $instance->update([
+            'total_records' => $count
+        ]);
 
         return $count;
     }
@@ -245,16 +304,14 @@ class BatchOrchestrator
     }
 
     /**
-     * Updated finalize to accept ID and strictly update status
+     * Finalize batch execution status.
      */
     public function finalize(JobInstance $instance, string $status = 'completed', ?string $traceId = null): void
     {
-        // Check if already completed to prevent duplicate logs/updates
         if ($instance->status === 'completed') {
             return;
         }
 
-        // Mark JobInstance as completed
         $instance->update([
             'status'       => $status,
             'completed_at' => now()
@@ -267,13 +324,11 @@ class BatchOrchestrator
             'failed'      => $instance->failed_records
         ], $traceId);
 
-        // --- SYNC STATUS TO PROVISIONING REQUEST ---
         $this->syncProvisioningRequestStatus($instance, $status);
     }
 
     protected function syncProvisioningRequestStatus(JobInstance $instance, string $status): void
     {
-        // Retrieve linked ProvisioningRequest ID from template, source_config, or parameters
         $requestId = $instance->template->source_config['provisioning_request_id']
                   ?? $instance->instance_parameters['provisioning_request_id']
                   ?? null;
@@ -310,7 +365,6 @@ class BatchOrchestrator
         }
     }
 
-
     public function generateReport(JobInstance $instance, string $format)
     {
         $fileName = "Report_Job_{$instance->id}.{$format}";
@@ -343,9 +397,7 @@ class BatchOrchestrator
 
             $analysis = [];
             foreach ($csv->getRecords() as $record) {
-                // Based on your 'cat' output, look for 'error_message' or 'status'
-                // If you saved the numeric code in the CSV, use that key.
-                $errorCode = $record['response_code'] ?? $record['status'] ?? 'Unknown Error';
+                $errorCode = $record['response_code'] ?? $record['status'] ?? $record['error_message'] ?? 'Unknown Error';
 
                 if (!isset($analysis[$errorCode])) {
                     $analysis[$errorCode] = 0;
@@ -353,7 +405,6 @@ class BatchOrchestrator
                 $analysis[$errorCode]++;
             }
 
-            // Format for Frontend: [['code' => '...', 'count' => ...]]
             return collect($analysis)->map(function ($count, $code) {
                 return [
                     'code' => $code,
@@ -364,5 +415,13 @@ class BatchOrchestrator
         } catch (\Exception $e) {
             return [['code' => 'Analysis Error', 'count' => $instance->failed_records]];
         }
+    }
+
+    /**
+     * Get the operating-system group used for batch files.
+     */
+    protected function getBatchFilesGroup(): string
+    {
+        return config('batch.files_group', 'uaplog');
     }
 }

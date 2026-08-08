@@ -107,4 +107,5 @@ return [
         public_path('storage/reimbursement_evidence') => storage_path('app/public/reimbursement_evidence'),
     ],
 
+    'batch_files_group' => env('BATCH_FILES_GROUP', 'uaplog'),
 ];

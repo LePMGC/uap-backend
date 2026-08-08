@@ -513,13 +513,70 @@ class UcipProvider extends BaseProvider
 
     public function extractIdentifier(string $rawPayload): ?string
     {
-        try {
-            if (preg_match('/<name>subscriberNumber<\/name>\s*<value><string>([^<]+)<\/string><\/value>/i', $rawPayload, $matches)) {
-                return $matches[1];
-            }
-        } catch (\Exception $e) {
+        if (empty(trim($rawPayload))) {
             return null;
         }
+
+        try {
+            // Remove anything before the XML declaration if necessary.
+            if (strpos($rawPayload, '<?xml') !== 0) {
+                $xmlStart = strpos($rawPayload, '<?xml');
+
+                if ($xmlStart !== false) {
+                    $rawPayload = substr($rawPayload, $xmlStart);
+                }
+            }
+
+            libxml_use_internal_errors(true);
+
+            $xml = new \SimpleXMLElement($rawPayload);
+
+            /*
+            * UCIP target subscriber is normally represented as:
+            *
+            * <member>
+            *     <name>subscriberNumber</name>
+            *     <value>
+            *         <string>...</string>
+            *     </value>
+            * </member>
+            *
+            * Search recursively because the parameter may be nested
+            * inside a struct/array depending on the command.
+            */
+            $members = $xml->xpath(
+                '//member[name="subscriberNumber"]'
+            );
+
+            if (!empty($members)) {
+                foreach ($members as $member) {
+                    if (!isset($member->value)) {
+                        continue;
+                    }
+
+                    $value = $member->value;
+
+                    // XML-RPC typed value: <string>, <i4>, etc.
+                    if ($value->children()->count() > 0) {
+                        $identifier = trim(
+                            (string) $value->children()[0]
+                        );
+                    } else {
+                        $identifier = trim((string) $value);
+                    }
+
+                    if ($identifier !== '') {
+                        return $identifier;
+                    }
+                }
+            }
+
+        } catch (\Throwable $e) {
+            \Log::warning(
+                "UCIP identifier extraction failed: " . $e->getMessage()
+            );
+        }
+
         return null;
     }
 

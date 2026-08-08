@@ -20,7 +20,7 @@ class CommandExecutor
         int $userId,
         ?string $jobInstanceId = null,
         ?string $traceId = null,
-        string $mode = 'form' // Add mode parameter
+        string $mode = 'form'
     ): CommandLog {
         $instance = ProviderInstance::findOrFail($instanceId);
         $command = Command::findOrFail($commandId);
@@ -41,10 +41,13 @@ class CommandExecutor
         ]);
 
         $startTime = microtime(true);
+        $requestData = is_array($userInput) ? $userInput : ['mode' => 'raw'];
+        $requestRaw = is_string($userInput) ? $userInput : null;
 
         try {
             $bluePrintService = new BlueprintService();
             $bluePrint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
+            
             // Resolve dynamic operator identity
             $operatorId = $this->resolveOperatorIdentifier($userId, $jobInstanceId);
 
@@ -56,19 +59,27 @@ class CommandExecutor
 
             if ($mode === 'raw' && is_string($userInput)) {
                 $injectedRaw = $provider->injectSystemParams($userInput);
+                $requestRaw = $injectedRaw;
                 $result = $provider->executeRaw($command->command_key, $injectedRaw);
 
                 $requestData = ['mode' => 'raw'];
-                $requestRaw = $result['request_raw'];
+                $requestRaw = $result['request_raw'] ?? $requestRaw;
                 $response = $result['response'];
             } else {
-                // 1. We keep userInput (the JSON object) for the 'data' field in the log
                 $requestData = is_array($userInput) ? $userInput : [];
 
-                // 2. We pass the userInput to the provider to build the actual protocol string
+                // Pre-compile the raw protocol string so it is captured even if network execution fails
+                try {
+                    $compiled = $this->preparePayload($command, $requestData, $instance);
+                    $requestRaw = is_string($compiled) ? $compiled : json_encode($compiled);
+                } catch (\Throwable $e) {
+                    $requestRaw = null;
+                }
+
+                // Pass the userInput to the provider to execute
                 $result = $provider->execute($command->command_key, $requestData);
 
-                $requestRaw = $result['request_raw'];
+                $requestRaw = $result['request_raw'] ?? $requestRaw;
                 $response = $result['response'];
             }
 
@@ -77,7 +88,7 @@ class CommandExecutor
             $log->update([
                 'request_payload' => [
                     'data' => $requestData,
-                    'raw'  => $requestRaw,
+                    'raw'  => $requestRaw ?? '',
                 ],
                 'response_payload' => $response,
                 'is_successful'    => $response['success'] ?? false,
@@ -92,8 +103,8 @@ class CommandExecutor
             $log->update([
                 'is_successful' => false,
                 'request_payload' => [
-                    'data' => is_array($userInput) ? $userInput : ['mode' => 'raw'],
-                    'raw'  => is_string($userInput) ? $userInput : null,
+                    'data' => $requestData,
+                    'raw'  => $requestRaw ?? '',
                 ],
                 'response_payload' => [
                     'success' => false,
@@ -110,23 +121,19 @@ class CommandExecutor
         }
     }
 
-
     protected function preparePayload(Command $command, array|string $userInput, $instance): string|array
     {
-        // If it's already a raw string, return it
         if (is_string($userInput)) {
             return $userInput;
         }
 
-        // Resolve system params (host_name, timestamp, etc.)
         $systemParams = $this->resolveSystemParams($command->system_params ?? [], $instance);
-
-        // Merged data contains both System Params and the Dynamic/Static data from the Batch Job
         $mergedData = array_merge($systemParams, $userInput);
 
-        // If the command has a request_payload template (e.g., XML/JSON with {{vars}})
-        if ($command->request_payload) {
-            return $this->compileTemplate($command->request_payload, $mergedData);
+        $template = $command->request_payload ?? $command->sample_payload ?? null;
+
+        if ($template) {
+            return $this->compileTemplate($template, $mergedData);
         }
 
         return $mergedData;
@@ -142,7 +149,6 @@ class CommandExecutor
         return $template;
     }
 
-
     protected function resolveSystemParams(array $params, $instance): array
     {
         $resolved = [];
@@ -157,30 +163,22 @@ class CommandExecutor
         return $resolved;
     }
 
-    /**
-     * Determine the dynamic operator identity based on manual triggers or batch jobs.
-     */
     protected function resolveOperatorIdentifier(?int $userId, ?string $jobInstanceId): string
     {
-        // Case 1: Manual execution has a real user logged in
         if ($userId && $userId > 0) {
-            $user = \App\Modules\Core\UserManagement\Models\User::find($userId); // Adjust to your actual User model namespace
+            $user = \App\Modules\Core\UserManagement\Models\User::find($userId);
             if ($user && !empty($user->username)) {
                 return strtoupper($user->username);
             }
         }
 
-        // Case 2: Automation/Scheduled Batch Job execution
         if ($jobInstanceId) {
-            // Query your batch job tables to find the user who created it originally
-            // Example assumes relations: JobInstance -> belongsTo -> BatchJob -> belongsTo -> User
-            $instance = \App\Models\BatchJobInstance::where('identifier_id', $jobInstanceId)->first(); // Adjust class names
+            $instance = \App\Models\BatchJobInstance::where('identifier_id', $jobInstanceId)->first();
             if ($instance && $instance->batchJob && $instance->batchJob->user) {
                 return strtoupper($instance->batchJob->user->username);
             }
         }
 
-        // Fallback default system fallback identity
         return 'UAP_SYSTEM';
     }
 }

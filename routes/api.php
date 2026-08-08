@@ -24,6 +24,15 @@ use App\Modules\Operations\Http\Controllers\ProvisioningProfileController;
 |--------------------------------------------------------------------------
 */
 
+// Temporary test route in routes/api.php or routes/web.php
+Route::get('/debug-upload', function () {
+    return response()->json([
+        'upload_max_filesize' => ini_get('upload_max_filesize'),
+        'post_max_size'       => ini_get('post_max_size'),
+        'sapi_name'           => php_sapi_name(),
+    ]);
+});
+
 // Public Routes
 Route::post('/login', [AuthController::class, 'login'])->name('login');
 

@@ -79,57 +79,81 @@ class BatchJobController extends Controller
 
     /**
      * STEP 2: DISCOVER HEADERS (Unified)
+     *
      * The FE sends the connection ID and the resource details (table, path, etc.)
-     * The API returns the headers so the user can proceed to Step 3 (Mapping).
+     * The API returns the headers, preview rows, and total subscriber count.
      */
     public function discoverHeadersAnFirstRows(Request $request): \Illuminate\Http\JsonResponse
     {
+        // Temporary debug log
+        if ($request->hasFile('file') === false && isset($_FILES['file'])) {
+            return response()->json([
+                'php_file_error_code' => $_FILES['file']['error'],
+                'raw_files' => $_FILES,
+            ], 400);
+        }
+
         $request->validate([
             'data_source_id' => 'required_without:file|exists:data_sources,id',
             'file'           => 'required_without:data_source_id|file|mimes:csv,txt,xlsx|max:10240',
             'source_config'  => 'required_with:data_source_id|array',
-            'number_of_rows' => 'integer|min:1|max:100'
+            'number_of_rows' => 'integer|min:1|max:100',
         ]);
 
         $rowCount = $request->get('number_of_rows', 5);
 
         try {
-            // CASE A: Manual File Upload (Already implemented)
+            // CASE A: Manual File Upload
             if ($request->hasFile('file')) {
                 $file = $request->file('file');
-                $filename = 'discovery_' . auth()->id() . '_' . time() . '.' . $file->getClientOriginalExtension();
-                $tempPath = $file->storeAs('temp/batch_discovery', $filename);
-                $discovery = $this->schemaService->getSchemaFromUpload($file, $rowCount);
+
+                $filename = 'discovery_' . auth()->id() . '_' . time() . '.' .
+                    $file->getClientOriginalExtension();
+
+                $tempPath = $file->storeAs(
+                    'temp/batch_discovery',
+                    $filename
+                );
+
+                $discovery = $this->schemaService->getSchemaFromUpload(
+                    $file,
+                    $rowCount
+                );
 
                 return response()->json([
                     'headers'        => $discovery['headers'],
                     'preview'        => $discovery['rows'],
+                    'total_records'  => $discovery['total_records'],
                     'temporary_path' => $tempPath,
-                    'source_type'    => 'upload'
+                    'source_type'    => 'upload',
                 ]);
             }
 
             // CASE B: Remote DataSources (SFTP, DB, API)
-            $dataSource = \App\Modules\Connectors\Models\DataSource::findOrFail($request->data_source_id);
+            $dataSource = \App\Modules\Connectors\Models\DataSource::findOrFail(
+                $request->data_source_id
+            );
 
-            // Pass the config and the model to the service
-            // The service will use $dataSource->type to decide how to connect
             $discovery = $this->schemaService->discoverSchema(
-                $dataSource, // Pass the whole model to get type and connection_settings
+                $dataSource,
                 $request->source_config,
                 $rowCount
             );
 
             return response()->json([
-                'headers'     => $discovery['headers'],
-                'preview'     => $discovery['rows'],
-                'source_type' => $dataSource->type
+                'headers'       => $discovery['headers'],
+                'preview'       => $discovery['rows'],
+                'total_records' => $discovery['total_records'],
+                'source_type'   => $dataSource->type,
             ]);
 
         } catch (\Exception $e) {
-            return response()->json(['error' => 'Discovery failed: ' . $e->getMessage()], 422);
+            return response()->json([
+                'error' => 'Discovery failed: ' . $e->getMessage(),
+            ], 422);
         }
     }
+
 
     /**
      * STEP 3 & 5: STORE TEMPLATE (The Permanent Contract)

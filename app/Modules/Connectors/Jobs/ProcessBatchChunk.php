@@ -7,13 +7,14 @@ use App\Modules\Connectors\Services\CommandExecutor;
 use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Arr;
+use League\Csv\Reader;
+use League\Csv\Statement;
 use Throwable;
 use App\Modules\Operations\Services\DynamicProfileResolver;
 
@@ -31,7 +32,9 @@ class ProcessBatchChunk implements ShouldQueue
 
     /**
      * @param JobInstance $instance
-     * @param array $chunk
+     * @param string $dir
+     * @param int $offset
+     * @param int $limit
      * @param int $commandId
      * @param string|null $traceId
      * @param int $heartbeat
@@ -39,7 +42,9 @@ class ProcessBatchChunk implements ShouldQueue
      */
     public function __construct(
         protected $instance,
-        protected array $chunk,
+        protected string $dir,
+        protected int $offset,
+        protected int $limit,
         protected int $commandId,
         protected ?string $traceId = null,
         protected int $heartbeat = 10,
@@ -72,15 +77,31 @@ class ProcessBatchChunk implements ShouldQueue
         $provisioningRequest = $requestId ? \App\Modules\Operations\Models\ProvisioningRequest::with('reimbursement')->find($requestId) : null;
         $isManyMany = $provisioningRequest?->reimbursement?->distribution_mode === 'MANY_MANY';
 
-        $dir = "jobs/{$instance->id}";
+        $dir = $this->dir;
+        $sourcePath = Storage::path("{$dir}/source.csv");
+
+        if (!file_exists($sourcePath)) {
+            throw new \Exception("Source CSV file not found at {$sourcePath}");
+        }
+
+        // Stream only assigned offset & limit from source CSV
+        $reader = Reader::createFromPath($sourcePath, 'r');
+        $reader->setHeaderOffset(0);
+
+        $stmt = Statement::create()
+            ->offset($this->offset)
+            ->limit($this->limit);
+
+        $records = $stmt->process($reader);
+
         $successFile = fopen(Storage::path("{$dir}/results_success.csv"), 'a');
-        $failedFile = fopen(Storage::path("{$dir}/results_failed.csv"), 'a');
+        $failedFile  = fopen(Storage::path("{$dir}/results_failed.csv"), 'a');
 
         $localSuccess = 0;
         $localFailed = 0;
         $uncommittedProcessed = 0;
 
-        foreach ($this->chunk as $row) {
+        foreach ($records as $row) {
             $rowStartTime = microtime(true);
             $uncommittedProcessed++;
 
@@ -116,9 +137,7 @@ class ProcessBatchChunk implements ShouldQueue
                 $targetProviderId = (int) $instance->template->provider_instance_id;
                 $targetCommandId  = (int) $this->commandId;
 
-                // ------------------------------------------------------------------
                 // DYNAMIC RESOLUTION FOR MANY_MANY MODE
-                // ------------------------------------------------------------------
                 if ($isManyMany) {
                     $offerId = $nestedParams['offerId'] ?? $row['offer_id'] ?? $row['offerId'] ?? null;
 
@@ -147,7 +166,7 @@ class ProcessBatchChunk implements ShouldQueue
                     $localSuccess++;
                     $this->appendLocked($successFile, array_merge($row, [
                         'command_log_id' => $logEntry->command_key ?? 'N/A',
-                        'response_code' => $logEntry->response_code
+                        'response_code'  => $logEntry->response_code
                     ]));
                 } else {
                     $localFailed++;
@@ -162,7 +181,8 @@ class ProcessBatchChunk implements ShouldQueue
                 $localFailed++;
                 $this->appendLocked($failedFile, array_merge($row, [
                     'command_log_id' => 'EXCEPTION',
-                    'error_message' => $e->getMessage()
+                    'response_code'  => 500,
+                    'error_message'  => $e->getMessage()
                 ]));
             }
 

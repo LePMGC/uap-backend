@@ -11,7 +11,7 @@ class CommandLogResource extends JsonResource
     /**
      * Transform the resource into an array.
      *
-     * @param  \Illuminate\Http\Request  $request
+     * @param \Illuminate\Http\Request $request
      * @return array
      */
     public function toArray($request): array
@@ -22,13 +22,28 @@ class CommandLogResource extends JsonResource
             : ($this->category_slug ?? 'unknown');
 
         // 2. Resolve Response Format from Blueprints
-        $format = config("blueprints.{$category}.response_format", 'xml');
+        $format = config(
+            "blueprints.{$category}.response_format",
+            'xml'
+        );
 
-        // 3. Extract Identifier (MSISDN) using Provider Logic
-        $identifier = $this->resolveMetadataIdentifier($category);
+        // 3. Resolve normalized target MSISDN
+        //
+        // Prefer request_payload.data because this is where the
+        // actual structured command parameters are available.
+        //
+        // Fall back to the raw payload/provider extractor for
+        // older records or payloads where data is unavailable.
+        $targetMsisdn = $this->resolveTargetMsisdn($category);
 
         return [
             'id' => $this->id,
+
+            // Normalized command target.
+            // FE should always use this field and should not care
+            // whether the provider calls it subscriberNumber,
+            // bNumber, MSISDN, etc.
+            'target_msisdn' => $targetMsisdn,
 
             // Command Execution Context
             'command_info' => [
@@ -50,6 +65,7 @@ class CommandLogResource extends JsonResource
             ],
 
             // Data Payloads
+            // Keep the original payload untouched for debugging/auditing.
             'payloads' => [
                 'request' => [
                     'data' => $this->request_payload['data'] ?? [],
@@ -61,17 +77,100 @@ class CommandLogResource extends JsonResource
             // Enriched Metadata
             'metadata' => [
                 'format' => $format,
-                'execution_time' => number_format($this->execution_time_ms, 2) . 'ms',
-                'timestamp' => $this->started_at ? $this->started_at->toDateTimeString() : now()->toDateTimeString(),
-                'identifier' => $identifier
+                'execution_time' => number_format(
+                    $this->execution_time_ms,
+                    2
+                ) . 'ms',
+                'timestamp' => $this->started_at
+                    ? $this->started_at->toDateTimeString()
+                    : now()->toDateTimeString(),
+
+                // Keep identifier for backward compatibility.
+                'identifier' => $targetMsisdn,
             ],
         ];
     }
 
     /**
-     * Internal helper to extract the MSISDN/Identifier based on provider category.
+     * Resolve the normalized target MSISDN/identifier.
+     *
+     * Provider-specific fields:
+     *
+     * Ericsson UCIP:
+     *   subscriberNumber
+     *
+     * Conviva LEAP:
+     *   bNumber (preferred)
+     *   MSISDN (fallback)
+     *
+     * We first inspect the structured request data because command
+     * logs may not contain a raw payload.
      */
-    protected function resolveMetadataIdentifier(string $category): string
+    protected function resolveTargetMsisdn(string $category): string
+    {
+        $requestData = $this->request_payload['data'] ?? [];
+
+        if (!is_array($requestData)) {
+            $requestData = [];
+        }
+
+        /*
+         * ============================================================
+         * ERICSSON UCIP
+         * ============================================================
+         */
+        if ($category === 'ericsson-ucip') {
+            $subscriberNumber = $requestData['subscriberNumber'] ?? null;
+
+            if ($subscriberNumber !== null && $subscriberNumber !== '') {
+                return (string) $subscriberNumber;
+            }
+        }
+
+        /*
+         * ============================================================
+         * CONVIVA LEAP
+         * ============================================================
+         *
+         * LEAP command payloads can contain both:
+         *
+         *   bNumber = target subscriber
+         *   MSISDN  = subscriber/account MSISDN
+         *
+         * For command-log targeting we explicitly prefer bNumber.
+         */
+        if ($category === 'conviva-leap') {
+            $bNumber = $requestData['bNumber'] ?? null;
+
+            if ($bNumber !== null && $bNumber !== '') {
+                return (string) $bNumber;
+            }
+
+            $msisdn = $requestData['MSISDN'] ?? null;
+
+            if ($msisdn !== null && $msisdn !== '') {
+                return (string) $msisdn;
+            }
+        }
+
+        /*
+         * ============================================================
+         * FALLBACK: RAW PROVIDER PAYLOAD
+         * ============================================================
+         *
+         * This keeps compatibility with records where structured
+         * request data is unavailable but raw payload exists.
+         */
+        return $this->resolveIdentifierFromRawPayload($category);
+    }
+
+    /**
+     * Extract identifier from the raw provider payload.
+     *
+     * Used only as a fallback when structured request data does not
+     * contain a target identifier.
+     */
+    protected function resolveIdentifierFromRawPayload(string $category): string
     {
         $rawRequest = $this->request_payload['raw'] ?? '';
 
@@ -80,16 +179,19 @@ class CommandLogResource extends JsonResource
         }
 
         try {
-            /** * We use the Factory to get the correct driver.
-             * Since we only need the parsing logic, we pass empty arrays for config
-             * and the minimal blueprint required for the factory to identify the driver.
-             */
-            $driver = ProviderFactory::make([], ['category_slug' => $category]);
+            $driver = ProviderFactory::make(
+                [],
+                ['category_slug' => $category]
+            );
 
-            return $driver->extractIdentifier($rawRequest) ?? 'Unknown';
+            return $driver->extractIdentifier($rawRequest) ?? 'N/A';
+
         } catch (\Throwable $e) {
-            // Fallback if provider is not found or parsing fails
-            Log::warning("Metadata extraction failed for command {$this->id}: " . $e->getMessage());
+            Log::warning(
+                "Metadata identifier extraction failed for command {$this->id}: "
+                . $e->getMessage()
+            );
+
             return 'N/A';
         }
     }
