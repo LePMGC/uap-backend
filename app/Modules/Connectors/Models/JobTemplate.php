@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class JobTemplate extends Model
 {
@@ -80,6 +81,7 @@ class JobTemplate extends Model
         return $this->hasMany(JobInstance::class);
     }
 
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(\App\Modules\Core\UserManagement\Models\User::class, 'user_id');
@@ -91,5 +93,10 @@ class JobTemplate extends Model
     public function command(): BelongsTo
     {
         return $this->belongsTo(Command::class);
+    }
+
+
+    public function latestInstance(): HasOne {
+        return $this->hasOne(JobInstance::class) ->whereNull('deleted_at') ->latest('created_at'); 
     }
 }

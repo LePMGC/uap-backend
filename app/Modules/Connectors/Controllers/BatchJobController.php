@@ -449,9 +449,9 @@ class BatchJobController extends Controller
 
 
     /**
-        * Display a listing of job templates with pagination and filtering.
-        * Isolate results dynamically based on view_all and view_own permission scopes.
-    */
+     * Display a listing of job templates with pagination and filtering.
+     * Isolate results dynamically based on view_all and view_own permission scopes.
+     */
     public function indexTemplates(Request $request): \Illuminate\Http\JsonResponse
     {
         $user = auth()->user();
@@ -467,8 +467,12 @@ class BatchJobController extends Controller
         $perPage = $request->query('per_page', 15);
         $search = $request->query('search');
 
-        $query = JobTemplate::with(['dataSource', 'providerInstance', 'user:id,name,username'])
-            ->latest();
+        $query = JobTemplate::with([
+            'dataSource',
+            'providerInstance',
+            'user:id,name,username',
+            'latestInstance:id,job_template_id,status,created_at',
+        ])->latest();
 
         // 2. Search Filter (Name or Description)
         if ($search) {
