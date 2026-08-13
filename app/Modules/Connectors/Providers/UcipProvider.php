@@ -50,7 +50,7 @@ class UcipProvider extends BaseProvider
     }
 
     /**
-     * Builds the UCIP XML-RPC payload by injecting parameters into the 
+     * Builds the UCIP XML-RPC payload by injecting parameters into the
      * template payload and appending missing parameters if necessary.
      */
     protected function buildPayload(
@@ -668,7 +668,7 @@ class UcipProvider extends BaseProvider
                 'originNodeType',
                 'originHostName',
                 'originTransactionID',
-                'originTimeStamp'
+                'originTimeStamp',
             ];
 
             $foundFields = [];

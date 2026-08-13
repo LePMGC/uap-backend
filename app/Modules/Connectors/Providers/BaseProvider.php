@@ -2,6 +2,8 @@
 
 namespace App\Modules\Connectors\Providers;
 
+use App\Modules\Connectors\Models\Command;
+
 abstract class BaseProvider
 {
     protected array $config;
@@ -61,28 +63,45 @@ abstract class BaseProvider
     /**
      * Handles execution when the user provides the full raw string.
      */
-    public function executeRaw(string $commandName, string $rawPayload): array
-    {
-        $commandDef = $this->blueprint['commands'][$commandName]
-            ?? throw new \Exception("Command {$commandName} not found.");
+    public function executeRaw(Command $command, string $rawPayload): array
+{
+    // Build the command definition from the actual DB command object.
+    // Do NOT resolve it using command_key because command_key is not unique.
+    $commandDef = [
+        'id'               => $command->id,
+        'name'             => $command->name,
+        'command_key'      => $command->command_key,
+        'category_slug'    => $command->category_slug,
+        'action'           => $command->action,
+        'request_payload'  => $command->request_payload,
+        'sample_payload'   => $command->sample_payload,
+        'system_params'    => $command->system_params ?? [],
+        'parameters'       => $command->parameters ?? [],
+        'meta'             => $command->meta ?? [],
+        'mapping_blueprint'=> $command->mapping_blueprint ?? [],
+    ];
 
-        try {
-            if ($this->isStateful && !$this->authenticated) {
-                $this->login();
-            }
+    try {
+        if ($this->isStateful && !$this->authenticated) {
+            $this->login();
+        }
 
-            $rawResponse = $this->send($rawPayload);
+        $rawResponse = $this->send($rawPayload);
 
-            return [
-                'request_raw' => $rawPayload, // The injected raw string
-                'response' => $this->parseResponse($commandDef, $rawResponse, [])
-            ];
-        } finally {
-            if ($this->isStateful && $this->authenticated) {
-                $this->logout();
-            }
+        return [
+            'request_raw' => $rawPayload,
+            'response' => $this->parseResponse(
+                $commandDef,
+                $rawResponse,
+                []
+            ),
+        ];
+    } finally {
+        if ($this->isStateful && $this->authenticated) {
+            $this->logout();
         }
     }
+}
 
     /**
      * Replaces placeholders in raw text with live instance/system values.
@@ -312,4 +331,55 @@ abstract class BaseProvider
             'errors' => []
         ];
     }
+
+  public function executeCommand(
+    Command $command,
+    array $userParams,
+    ?string $operatorId = null
+): array {
+    $commandDef = [
+        'id'                => $command->id,
+        'name'              => $command->name,
+        'command_key'       => $command->command_key,
+        'category_slug'     => $command->category_slug,
+        'action'            => $command->action,
+        'request_payload'   => $command->request_payload,
+        'sample_payload'    => $command->sample_payload,
+        'system_params'     => $command->system_params ?? [],
+        'parameters'        => $command->parameters ?? [],
+        'meta'              => $command->meta ?? [],
+        'mapping_blueprint' => $command->mapping_blueprint ?? [],
+    ];
+
+    try {
+        if ($this->isStateful && !$this->authenticated) {
+            $this->login();
+        }
+
+        $this->currentCommand = $commandDef;
+
+        $payload = $this->buildPayload(
+            $commandDef,
+            $userParams,
+            $operatorId
+        );
+
+        $rawResponse = $this->send($payload);
+
+        return [
+            'request_raw' => $payload,
+            'response' => $this->parseResponse(
+                $commandDef,
+                $rawResponse,
+                $userParams
+            )
+        ];
+    } finally {
+        $this->currentCommand = null;
+
+        if ($this->isStateful && $this->authenticated) {
+            $this->logout();
+        }
+    }
+}
 }

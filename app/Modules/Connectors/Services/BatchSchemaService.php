@@ -20,10 +20,19 @@ class BatchSchemaService
      * - preview rows
      * - total_records (number of subscriber/data rows, excluding header)
      */
-    public function getSchemaFromUpload($file, int $limit = 5): array
+
+    public function getSchemaFromUpload($file, int $limit = 5, ?string $delimiter = null): array
     {
         try {
-            $csv = Reader::createFromPath($file->getRealPath(), 'r');
+            $filePath = $file->getRealPath();
+
+            // 1. Auto-detect delimiter if not explicitly provided
+            $resolvedDelimiter = $delimiter ?: $this->detectDelimiter($filePath);
+
+            $csv = Reader::createFromPath($filePath, 'r');
+            
+            // 2. Set the detected or specified delimiter on the CSV reader
+            $csv->setDelimiter($resolvedDelimiter);
             $csv->setHeaderOffset(0);
 
             $headers = $csv->getHeader();
@@ -31,10 +40,8 @@ class BatchSchemaService
             $totalRecords = 0;
 
             foreach ($csv->getRecords() as $record) {
-                // Count every data row/subscriber
                 $totalRecords++;
 
-                // Only keep the requested number of preview rows
                 if (count($rows) < $limit) {
                     $rows[] = $record;
                 }
@@ -44,6 +51,7 @@ class BatchSchemaService
                 'headers'       => $headers,
                 'rows'          => $rows,
                 'total_records' => $totalRecords,
+                'delimiter'     => $resolvedDelimiter, // Return detected delimiter to FE
             ];
 
         } catch (\Exception $e) {
@@ -51,6 +59,29 @@ class BatchSchemaService
 
             throw $e;
         }
+    }
+
+    /**
+     * Detects whether the file uses comma (,) or semicolon (;) as a delimiter.
+     */
+    private function detectDelimiter(string $filePath): string
+    {
+        $handle = @fopen($filePath, 'r');
+        if (!$handle) {
+            return ',';
+        }
+
+        $firstLine = fgets($handle);
+        fclose($handle);
+
+        if (!$firstLine) {
+            return ',';
+        }
+
+        $semicolons = substr_count($firstLine, ';');
+        $commas     = substr_count($firstLine, ',');
+
+        return $semicolons > $commas ? ';' : ',';
     }
 
 

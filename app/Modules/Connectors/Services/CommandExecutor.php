@@ -59,7 +59,7 @@ class CommandExecutor
             if ($mode === 'raw' && is_string($userInput)) {
                 $injectedRaw = $provider->injectSystemParams($userInput);
                 $requestRaw = $injectedRaw;
-                $result = $provider->executeRaw($command->command_key, $injectedRaw);
+                $result = $provider->executeRaw($command, $injectedRaw);
 
                 $requestData = ['mode' => 'raw'];
                 $requestRaw = $result['request_raw'] ?? $requestRaw;
@@ -74,9 +74,9 @@ class CommandExecutor
                     $requestRaw = null;
                 }
 
-                $result = $provider->execute(
-                    $command->command_key,
-                    $requestData
+                $result = $provider->executeCommand(
+                         $command,
+                        $requestData
                 );
 
                 $requestRaw = $result['request_raw'] ?? $requestRaw;

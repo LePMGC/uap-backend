@@ -83,9 +83,9 @@ class BatchJobController extends Controller
      * The FE sends the connection ID and the resource details (table, path, etc.)
      * The API returns the headers, preview rows, and total subscriber count.
      */
+
     public function discoverHeadersAnFirstRows(Request $request): \Illuminate\Http\JsonResponse
     {
-        // Temporary debug log
         if ($request->hasFile('file') === false && isset($_FILES['file'])) {
             return response()->json([
                 'php_file_error_code' => $_FILES['file']['error'],
@@ -98,9 +98,11 @@ class BatchJobController extends Controller
             'file'           => 'required_without:data_source_id|file|mimes:csv,txt,xlsx|max:10240',
             'source_config'  => 'required_with:data_source_id|array',
             'number_of_rows' => 'integer|min:1|max:100',
+            'delimiter'      => 'nullable|string|in:\,,\;,tab,\t', // Validation for delimiter
         ]);
 
-        $rowCount = $request->get('number_of_rows', 5);
+        $rowCount  = $request->get('number_of_rows', 5);
+        $delimiter = $request->get('delimiter');
 
         try {
             // CASE A: Manual File Upload
@@ -115,15 +117,18 @@ class BatchJobController extends Controller
                     $filename
                 );
 
+                // Pass delimiter to the schema service
                 $discovery = $this->schemaService->getSchemaFromUpload(
                     $file,
-                    $rowCount
+                    $rowCount,
+                    $delimiter
                 );
 
                 return response()->json([
                     'headers'        => $discovery['headers'],
                     'preview'        => $discovery['rows'],
                     'total_records'  => $discovery['total_records'],
+                    'delimiter'      => $discovery['delimiter'],
                     'temporary_path' => $tempPath,
                     'source_type'    => 'upload',
                 ]);
