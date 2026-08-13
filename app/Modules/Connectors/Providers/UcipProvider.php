@@ -7,6 +7,7 @@ use Exception;
 use SimpleXMLElement;
 use DOMDocument;
 use DOMXPath;
+use Illuminate\Support\Facades\Redis;
 
 class UcipProvider extends BaseProvider
 {
@@ -28,34 +29,71 @@ class UcipProvider extends BaseProvider
     }
 
     /**
-     * Builds the UCIP XML-RPC payload by injecting parameters into the 
-     * template payload without altering original XML tag types (<string>, <i4>, etc.).
+     * Replaces placeholders in raw text with live system values and ensures
+     * missing mandatory system nodes like originOperatorID are present in the XML.
      */
-    protected function buildPayload(array $commandDef, array $params): string
+    public function injectSystemParams(string $rawPayload, ?string $operatorId = null): string
     {
+        $resolvedOperatorId = $operatorId ?? $this->resolveUcipOperatorId();
+
+        $rawPayload = parent::injectSystemParams($rawPayload, $resolvedOperatorId);
+        $rawPayload = str_replace('{origin_operator_id}', $resolvedOperatorId, $rawPayload);
+
+        // Guarantee originOperatorID node exists in XML structure for raw execution
+        if (str_contains($rawPayload, '<methodCall>') && !str_contains($rawPayload, '<name>originOperatorID</name>')) {
+            $rawPayload = $this->injectValuesIntoXmlTemplate($rawPayload, [
+                'originOperatorID' => $resolvedOperatorId,
+            ]);
+        }
+
+        return $rawPayload;
+    }
+
+    /**
+     * Builds the UCIP XML-RPC payload by injecting parameters into the 
+     * template payload and appending missing parameters if necessary.
+     */
+    protected function buildPayload(
+        array $commandDef,
+        array $params,
+        ?string $operatorId = null
+    ): string {
+        $resolvedOperatorId = $operatorId ?? $this->resolveUcipOperatorId();
+
         $pool = [
             'originNodeType'      => $this->config['origin_node_type'] ?? 'EXT',
             'originHostName'      => 'UAP',
             'originTransactionID' => $this->generateTransactionId(),
             'originTimeStamp'     => now()->format('Ymd\TH:i:s+0100'),
-            'originOperatorID'    => $this->config['dynamic_operator_id']
-                                 ?? $this->config['origin_operator_id']
-                                 ?? 'UAPAdmin',
+            'originOperatorID'    => $resolvedOperatorId,
         ];
 
-        $allowedSystemKeys = $commandDef['system_params'] ?? [];
-        if (isset($commandDef['meta']['system_keys'])) {
-            $allowedSystemKeys = array_fill_keys($commandDef['meta']['system_keys'], true);
+        $rawSystemKeys = $commandDef['system_params'] ?? $commandDef['meta']['system_keys'] ?? [];
+        $authorizedSystemParams = [];
+
+        if (is_array($rawSystemKeys)) {
+            foreach ($rawSystemKeys as $k => $v) {
+                $keyName = is_numeric($k) ? $v : $k;
+                if (array_key_exists($keyName, $pool)) {
+                    $authorizedSystemParams[$keyName] = $pool[$keyName];
+                }
+            }
         }
 
-        $authorizedSystemParams = [];
-        foreach ($allowedSystemKeys as $key => $placeholder) {
-            if (array_key_exists($key, $pool)) {
-                $authorizedSystemParams[$key] = $pool[$key];
+        // Always guarantee system defaults are present in authorized params
+        foreach ($pool as $sysKey => $sysValue) {
+            if (!isset($authorizedSystemParams[$sysKey])) {
+                $authorizedSystemParams[$sysKey] = $sysValue;
             }
         }
 
         $finalParams = array_merge($authorizedSystemParams, $params);
+
+        // Explicitly enforce originOperatorID regardless of request input/config
+        if (empty($finalParams['originOperatorID'])) {
+            $finalParams['originOperatorID'] = $resolvedOperatorId;
+        }
+
         $templateXml = $commandDef['sample_payload'] ?? $commandDef['raw_payload'] ?? $commandDef['request_payload'] ?? null;
 
         if (!empty($templateXml)) {
@@ -79,7 +117,41 @@ class UcipProvider extends BaseProvider
     }
 
     /**
-     * Replaces node text content in sample XML template while keeping tag types intact.
+     * Resolves the UCIP-specific originOperatorID according to standard format:
+     * "UAP" + user_id + uppercase(clean_username)
+     * Example: User ID 1 (admin_uap) -> UAP1ADMINUAP
+     */
+    protected function resolveUcipOperatorId(): string
+    {
+        $userId = $this->config['user_id'] ?? null;
+        $jobInstanceId = $this->config['job_instance_id'] ?? null;
+
+        if ($userId && $userId > 0) {
+            $user = \App\Modules\Core\UserManagement\Models\User::find($userId);
+            if ($user && !empty($user->username)) {
+                $cleanUsername = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $user->username));
+                return "UAP{$user->id}{$cleanUsername}";
+            }
+        }
+
+        if ($jobInstanceId) {
+            $instance = \App\Models\BatchJobInstance::where('identifier_id', $jobInstanceId)->first();
+            if ($instance && $instance->batchJob && $instance->batchJob->user) {
+                $user = $instance->batchJob->user;
+                if (!empty($user->username)) {
+                    $cleanUsername = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $user->username));
+                    return "UAP{$user->id}{$cleanUsername}";
+                }
+            }
+        }
+
+        return $this->config['origin_operator_id'] ?? 'UAPSYSTEM';
+    }
+
+    /**
+     * Replaces node text content in sample XML template while keeping tag types intact,
+     * and automatically appends any missing parameter nodes (e.g. originOperatorID)
+     * directly to the primary XML-RPC struct.
      */
     private function injectValuesIntoXmlTemplate(string $templateXml, array $params): string
     {
@@ -100,6 +172,7 @@ class UcipProvider extends BaseProvider
 
         $xpath = new DOMXPath($dom);
         $members = $xpath->query('//member');
+        $processedParams = [];
 
         foreach ($members as $member) {
             $nameNode = $xpath->query('name', $member)->item(0);
@@ -110,6 +183,7 @@ class UcipProvider extends BaseProvider
             $paramName = trim($nameNode->textContent);
 
             if (array_key_exists($paramName, $params)) {
+                $processedParams[$paramName] = true;
                 $valueNode = $xpath->query('value', $member)->item(0);
                 if ($valueNode && $valueNode->hasChildNodes()) {
                     foreach ($valueNode->childNodes as $childNode) {
@@ -126,12 +200,44 @@ class UcipProvider extends BaseProvider
             }
         }
 
+        $structNode = $xpath->query('//struct')->item(0);
+        if ($structNode) {
+            foreach ($params as $key => $value) {
+                if (!isset($processedParams[$key])) {
+                    $memberNode = $dom->createElement('member');
+
+                    $nameNode = $dom->createElement('name', htmlspecialchars($key));
+                    $memberNode->appendChild($nameNode);
+
+                    $valueNode = $dom->createElement('value');
+                    $typeTag = is_int($value) ? 'i4' : (is_bool($value) ? 'boolean' : 'string');
+                    $valStr = is_bool($value) ? ($value ? '1' : '0') : htmlspecialchars((string)$value);
+
+                    $typeNode = $dom->createElement($typeTag, $valStr);
+                    $valueNode->appendChild($typeNode);
+                    $memberNode->appendChild($valueNode);
+
+                    $structNode->appendChild($memberNode);
+                }
+            }
+        }
+
         return $dom->saveXML();
     }
 
     protected function generateTransactionId(): string
     {
-        return substr(str_shuffle("0123456789"), 0, 6);
+        $timestamp = now()->format('YmdHis'); // 14 digits
+        $key = 'ucip:transaction_sequence:' . $timestamp;
+
+        $sequence = Redis::incr($key);
+
+        if ($sequence === 1) {
+            Redis::expire($key, 120);
+        }
+
+        // Pad to 6 digits to keep total length at exactly 20 digits (14 + 6)
+        return $timestamp . str_pad((string)$sequence, 6, '0', STR_PAD_LEFT);
     }
 
     private function encodeValue($value): string
@@ -260,19 +366,6 @@ class UcipProvider extends BaseProvider
         return $items;
     }
 
-    private function handleProtocolFault(SimpleXMLElement $faultXml): array
-    {
-        $faultData = $this->flattenXmlStruct($faultXml->value->struct);
-        $code = (int)($faultData['faultCode'] ?? 999);
-
-        return [
-            'success' => false,
-            'code'    => $code,
-            'message' => "Protocol Fault: " . ($this->statusRegistry['faults'][$code] ?? $faultData['faultString'] ?? 'Unknown Error'),
-            'data'    => $faultData
-        ];
-    }
-
     private function handleFault(SimpleXMLElement $faultStruct): array
     {
         $faultData = $this->parseXmlStruct($faultStruct);
@@ -286,20 +379,6 @@ class UcipProvider extends BaseProvider
             'data'    => $faultData,
             'raw'     => $faultStruct->asXML()
         ];
-    }
-
-    private function flattenXmlStruct(SimpleXMLElement $container): array
-    {
-        $result = [];
-        $members = $container->xpath('.//member');
-
-        foreach ($members as $member) {
-            $name = (string)$member->name;
-            $valNode = $member->value->children();
-            $result[$name] = (string)$valNode[0];
-        }
-
-        return $result;
     }
 
     public function checkHealth(): bool
@@ -325,6 +404,7 @@ class UcipProvider extends BaseProvider
             'originHostName'      => 'UAP',
             'originTransactionID' => '{auto_gen_id}',
             'originTimeStamp'     => '{auto_gen_iso8601}',
+            'originOperatorID'    => '{auto_gen_id}',
         ];
 
         foreach ($map as $key => $placeholder) {
@@ -405,9 +485,7 @@ class UcipProvider extends BaseProvider
                 'originHostName'      => 'UAP',
                 'originTransactionID' => $this->generateTransactionId(),
                 'originTimeStamp'     => now()->format('Ymd\TH:i:s+0100'),
-                'originOperatorID'    => $this->config['dynamic_operator_id']
-                                 ?? $this->config['origin_operator_id']
-                                 ?? 'UAPAdmin',
+                'originOperatorID'    => $this->resolveUcipOperatorId(),
             ];
 
             $detectedSystemParams = [];
@@ -518,7 +596,6 @@ class UcipProvider extends BaseProvider
         }
 
         try {
-            // Remove anything before the XML declaration if necessary.
             if (strpos($rawPayload, '<?xml') !== 0) {
                 $xmlStart = strpos($rawPayload, '<?xml');
 
@@ -528,25 +605,9 @@ class UcipProvider extends BaseProvider
             }
 
             libxml_use_internal_errors(true);
-
             $xml = new \SimpleXMLElement($rawPayload);
 
-            /*
-            * UCIP target subscriber is normally represented as:
-            *
-            * <member>
-            *     <name>subscriberNumber</name>
-            *     <value>
-            *         <string>...</string>
-            *     </value>
-            * </member>
-            *
-            * Search recursively because the parameter may be nested
-            * inside a struct/array depending on the command.
-            */
-            $members = $xml->xpath(
-                '//member[name="subscriberNumber"]'
-            );
+            $members = $xml->xpath('//member[name="subscriberNumber"]');
 
             if (!empty($members)) {
                 foreach ($members as $member) {
@@ -556,13 +617,10 @@ class UcipProvider extends BaseProvider
 
                     $value = $member->value;
 
-                    // XML-RPC typed value: <string>, <i4>, etc.
                     if ($value->children()->count() > 0) {
-                        $identifier = trim(
-                            (string) $value->children()[0]
-                        );
+                        $identifier = trim((string)$value->children()[0]);
                     } else {
-                        $identifier = trim((string) $value);
+                        $identifier = trim((string)$value);
                     }
 
                     if ($identifier !== '') {
@@ -572,9 +630,7 @@ class UcipProvider extends BaseProvider
             }
 
         } catch (\Throwable $e) {
-            \Log::warning(
-                "UCIP identifier extraction failed: " . $e->getMessage()
-            );
+            \Log::warning("UCIP identifier extraction failed: " . $e->getMessage());
         }
 
         return null;

@@ -21,7 +21,7 @@ class LeapProvider extends BaseProvider
      * For LEAP REST provider, the payload returned here represents the query parameters
      * serialized ready for dispatch.
      */
-    protected function buildPayload(array $commandDef, array $params): string
+    protected function buildPayload(array $commandDef, array $params,     ?string $operatorId = null): string
     {
         \Log::info('LEAP commandDef', $commandDef);
 

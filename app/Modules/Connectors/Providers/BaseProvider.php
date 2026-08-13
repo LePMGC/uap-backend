@@ -18,28 +18,40 @@ abstract class BaseProvider
         $this->blueprint = $blueprint;
     }
 
-    public function execute(string $commandName, array $userParams): array
-    {
+    public function execute(
+        string $commandName,
+        array $userParams,
+        ?string $operatorId = null
+    ): array {
         $commandDef = $this->blueprint['commands'][$commandName]
             ?? throw new \Exception("Command {$commandName} not found.");
 
         try {
-            // Handle Login for stateful protocols like CAI/EDA
             if ($this->isStateful && !$this->authenticated) {
                 $this->login();
             }
 
             $this->currentCommand = $commandDef;
-            $payload = $this->buildPayload($commandDef, $userParams);
+
+            $payload = $this->buildPayload(
+                $commandDef,
+                $userParams,
+                $operatorId
+            );
+
             $rawResponse = $this->send($payload);
 
             return [
-                'request_raw' => $payload, // Capture the string sent
-                'response' => $this->parseResponse($commandDef, $rawResponse, $userParams)
+                'request_raw' => $payload,
+                'response' => $this->parseResponse(
+                    $commandDef,
+                    $rawResponse,
+                    $userParams
+                )
             ];
         } finally {
             $this->currentCommand = null;
-            // Optional: Close session after single command if necessary
+
             if ($this->isStateful && $this->authenticated) {
                 $this->logout();
             }
@@ -79,7 +91,7 @@ abstract class BaseProvider
     {
         $systemParams = [
             '{host_name}'          => $this->config['host'] ?? '',
-            '{auto_gen_id}'        => $this->generateTransactionId(), // Now safe to call
+            '{auto_gen_id}'        => $this->generateTransactionId(),
             '{auto_gen_iso8601}'   => now()->format('Ymd\TH:i:sO'),
             '{origin_node_type}'   => $this->config['origin_node_type'] ?? 'EXT',
         ];
@@ -104,7 +116,11 @@ abstract class BaseProvider
 
     abstract protected function login(): void;
     abstract protected function logout(): void;
-    abstract protected function buildPayload(array $commandDef, array $params): string;
+    abstract protected function buildPayload(
+        array $commandDef,
+        array $params,
+        ?string $operatorId = null
+    ): string;
     abstract protected function send(string $payload): string;
     abstract protected function parseResponse(array $commandDef, string $rawResponse, array $userParams): array;
 

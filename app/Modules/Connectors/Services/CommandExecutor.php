@@ -47,13 +47,12 @@ class CommandExecutor
         try {
             $bluePrintService = new BlueprintService();
             $bluePrint = $bluePrintService->getCategoryBlueprint($instance->category_slug);
-            
-            // Resolve dynamic operator identity
-            $operatorId = $this->resolveOperatorIdentifier($userId, $jobInstanceId);
 
-            // Inject it cleanly into connection settings array temporarily for this provider's lifecycle
-            $connectionSettings = $instance->connection_settings;
-            $connectionSettings['dynamic_operator_id'] = $operatorId;
+            // Pass execution context variables into connection settings array
+            $connectionSettings = array_merge($instance->connection_settings ?? [], [
+                'user_id' => $userId,
+                'job_instance_id' => $jobInstanceId,
+            ]);
 
             $provider = ProviderFactory::make($connectionSettings, $bluePrint);
 
@@ -68,7 +67,6 @@ class CommandExecutor
             } else {
                 $requestData = is_array($userInput) ? $userInput : [];
 
-                // Pre-compile the raw protocol string so it is captured even if network execution fails
                 try {
                     $compiled = $this->preparePayload($command, $requestData, $instance);
                     $requestRaw = is_string($compiled) ? $compiled : json_encode($compiled);
@@ -76,8 +74,10 @@ class CommandExecutor
                     $requestRaw = null;
                 }
 
-                // Pass the userInput to the provider to execute
-                $result = $provider->execute($command->command_key, $requestData);
+                $result = $provider->execute(
+                    $command->command_key,
+                    $requestData
+                );
 
                 $requestRaw = $result['request_raw'] ?? $requestRaw;
                 $response = $result['response'];
@@ -161,24 +161,5 @@ class CommandExecutor
             };
         }
         return $resolved;
-    }
-
-    protected function resolveOperatorIdentifier(?int $userId, ?string $jobInstanceId): string
-    {
-        if ($userId && $userId > 0) {
-            $user = \App\Modules\Core\UserManagement\Models\User::find($userId);
-            if ($user && !empty($user->username)) {
-                return strtoupper($user->username);
-            }
-        }
-
-        if ($jobInstanceId) {
-            $instance = \App\Models\BatchJobInstance::where('identifier_id', $jobInstanceId)->first();
-            if ($instance && $instance->batchJob && $instance->batchJob->user) {
-                return strtoupper($instance->batchJob->user->username);
-            }
-        }
-
-        return 'UAP_SYSTEM';
     }
 }

@@ -65,7 +65,7 @@ class CaiProvider extends BaseProvider
      * Overrides BaseProvider to handle MML string construction
      * from the database sample payload.
      */
-    protected function buildPayload(array $commandDef, array $params): string
+    protected function buildPayload(array $commandDef, array $params, ?string $operatorId = null): string
     {
         $payload = $commandDef['request_payload'] ?? '';
 
