@@ -11,6 +11,7 @@ abstract class BaseProvider
     protected bool $isStateful = false;
     protected bool $authenticated = false;
     protected ?array $currentCommand = null;
+    protected bool $inBatchSession = false;
 
 
 
@@ -332,54 +333,81 @@ abstract class BaseProvider
         ];
     }
 
-  public function executeCommand(
-    Command $command,
-    array $userParams,
-    ?string $operatorId = null
-): array {
-    $commandDef = [
-        'id'                => $command->id,
-        'name'              => $command->name,
-        'command_key'       => $command->command_key,
-        'category_slug'     => $command->category_slug,
-        'action'            => $command->action,
-        'request_payload'   => $command->request_payload,
-        'sample_payload'    => $command->sample_payload,
-        'system_params'     => $command->system_params ?? [],
-        'parameters'        => $command->parameters ?? [],
-        'meta'              => $command->meta ?? [],
-        'mapping_blueprint' => $command->mapping_blueprint ?? [],
-    ];
-
-    try {
-        if ($this->isStateful && !$this->authenticated) {
-            $this->login();
-        }
-
-        $this->currentCommand = $commandDef;
-
-        $payload = $this->buildPayload(
-            $commandDef,
-            $userParams,
-            $operatorId
-        );
-
-        $rawResponse = $this->send($payload);
-
-        return [
-            'request_raw' => $payload,
-            'response' => $this->parseResponse(
-                $commandDef,
-                $rawResponse,
-                $userParams
-            )
+    public function executeCommand(
+        Command $command,
+        array $userParams,
+        ?string $operatorId = null
+    ): array {
+        $commandDef = [
+            'id'                => $command->id,
+            'name'              => $command->name,
+            'command_key'       => $command->command_key,
+            'category_slug'     => $command->category_slug,
+            'action'            => $command->action,
+            'request_payload'   => $command->request_payload,
+            'sample_payload'    => $command->sample_payload,
+            'system_params'     => $command->system_params ?? [],
+            'parameters'        => $command->parameters ?? [],
+            'meta'              => $command->meta ?? [],
+            'mapping_blueprint' => $command->mapping_blueprint ?? [],
         ];
-    } finally {
-        $this->currentCommand = null;
 
-        if ($this->isStateful && $this->authenticated) {
-            $this->logout();
+        try {
+            if ($this->isStateful && !$this->authenticated) {
+                $this->login();
+            }
+
+            $this->currentCommand = $commandDef;
+
+            $payload = $this->buildPayload(
+                $commandDef,
+                $userParams,
+                $operatorId
+            );
+
+            $rawResponse = $this->send($payload);
+
+            return [
+                'request_raw' => $payload,
+                'response' => $this->parseResponse(
+                    $commandDef,
+                    $rawResponse,
+                    $userParams
+                )
+            ];
+        } finally {
+            $this->currentCommand = null;
+
+            if ($this->isStateful && $this->authenticated) {
+                $this->logout();
+            }
         }
     }
-}
+
+    /**
+     * Optional hook called before starting a batch chunk.
+     * Overridden by stateful providers (e.g. CAI).
+     */
+    public function beginSession(): void
+    {
+        // Default: No-op for stateless providers (UCIP, LEAP, etc.)
+    }
+
+    /**
+     * Optional hook called after completing a batch chunk.
+     * Overridden by stateful providers (e.g. CAI).
+     */
+    public function endSession(): void
+    {
+        // Default: No-op for stateless providers
+    }
+
+    /**
+     * Fallback hook for stateful providers to clean up pooled sessions at chunk end.
+     * Stateless providers default to a safe no-op.
+     */
+    public static function closeActiveSessions(): void
+    {
+        // Default no-op for stateless providers
+    }
 }

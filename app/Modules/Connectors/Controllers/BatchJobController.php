@@ -83,6 +83,7 @@ class BatchJobController extends Controller
      * The FE sends the connection ID and the resource details (table, path, etc.)
      * The API returns the headers, preview rows, and total subscriber count.
      */
+    // App/Modules/Connectors/Controllers/BatchJobController.php
 
     public function discoverHeadersAnFirstRows(Request $request): \Illuminate\Http\JsonResponse
     {
@@ -98,7 +99,7 @@ class BatchJobController extends Controller
             'file'           => 'required_without:data_source_id|file|mimes:csv,txt,xlsx|max:10240',
             'source_config'  => 'required_with:data_source_id|array',
             'number_of_rows' => 'integer|min:1|max:100',
-            'delimiter'      => 'nullable|string|in:\,,\;,tab,\t', // Validation for delimiter
+            'delimiter'      => 'nullable|string|in:\,,\;,tab,\t',
         ]);
 
         $rowCount  = $request->get('number_of_rows', 5);
@@ -112,14 +113,18 @@ class BatchJobController extends Controller
                 $filename = 'discovery_' . auth()->id() . '_' . time() . '.' .
                     $file->getClientOriginalExtension();
 
+                // Save upload to temp storage
                 $tempPath = $file->storeAs(
                     'temp/batch_discovery',
                     $filename
                 );
 
-                // Pass delimiter to the schema service
+                // Get absolute path of the stored file
+                $fullStoragePath = \Illuminate\Support\Facades\Storage::path($tempPath);
+
+                // Pass absolute path to convert non-comma files in-place
                 $discovery = $this->schemaService->getSchemaFromUpload(
-                    $file,
+                    $fullStoragePath,
                     $rowCount,
                     $delimiter
                 );
@@ -128,7 +133,7 @@ class BatchJobController extends Controller
                     'headers'        => $discovery['headers'],
                     'preview'        => $discovery['rows'],
                     'total_records'  => $discovery['total_records'],
-                    'delimiter'      => $discovery['delimiter'],
+                    'delimiter'      => ',', // File is guaranteed to be comma-separated now
                     'temporary_path' => $tempPath,
                     'source_type'    => 'upload',
                 ]);

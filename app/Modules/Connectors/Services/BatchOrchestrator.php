@@ -116,15 +116,6 @@ class BatchOrchestrator
             /*
              * ---------------------------------------------------------
              * 5. Prepare batch directory
-             *
-             * The directory must be:
-             *
-             *   owner : nginx
-             *   group : uaplog
-             *   mode  : 2775
-             *
-             * The setgid bit is important because it causes newly
-             * created files/directories to inherit the uaplog group.
              * ---------------------------------------------------------
              */
             $dir = "jobs/{$instance->id}";
@@ -390,19 +381,7 @@ class BatchOrchestrator
     }
 
     /**
-     * Prepare a batch directory for cooperative access by
-     * PHP-FPM (apache) and Horizon (nginx).
-     *
-     * Expected:
-     *
-     *   group = uaplog
-     *   mode  = 2775
-     *
-     * 2775:
-     *   owner: rwx
-     *   group: rwx
-     *   other: r-x
-     *   setgid
+     * Prepare a batch directory for cooperative access by PHP-FPM and Horizon workers.
      */
     protected function prepareBatchDirectory(string $path): void
     {
@@ -420,11 +399,7 @@ class BatchOrchestrator
             );
         }
 
-        if (!chgrp($path, $group)) {
-            throw new RuntimeException(
-                "Failed to set group '{$group}' on {$path}"
-            );
-        }
+        $this->applyGroupOwnership($path, $group);
 
         /*
          * Re-apply chmod after chgrp as a defensive measure.
@@ -438,13 +413,7 @@ class BatchOrchestrator
     }
 
     /**
-     * Prepare a batch file for cooperative access by
-     * PHP-FPM (apache) and Horizon (nginx).
-     *
-     * Expected:
-     *
-     *   group = uaplog
-     *   mode  = 0664
+     * Prepare a batch file for cooperative access by PHP-FPM and Horizon workers.
      */
     protected function prepareBatchFile(string $path): void
     {
@@ -462,11 +431,7 @@ class BatchOrchestrator
             );
         }
 
-        if (!chgrp($path, $group)) {
-            throw new RuntimeException(
-                "Failed to set group '{$group}' on {$path}"
-            );
-        }
+        $this->applyGroupOwnership($path, $group);
 
         /*
          * Re-apply chmod after chgrp as a defensive measure.
@@ -475,6 +440,27 @@ class BatchOrchestrator
             throw new RuntimeException(
                 "Failed to re-apply permissions 0664 on {$path}"
             );
+        }
+    }
+
+    /**
+     * Safely apply group ownership without halting execution if the group does not exist on the host system.
+     */
+    protected function applyGroupOwnership(string $path, string $group): void
+    {
+        if (empty($group)) {
+            return;
+        }
+
+        try {
+            if (function_exists('posix_getgrnam') && posix_getgrnam($group) === false) {
+                Log::warning("[BatchOrchestrator] OS group '{$group}' does not exist on this system. Skipping chgrp for path: {$path}");
+                return;
+            }
+
+            @chgrp($path, $group);
+        } catch (Throwable $e) {
+            Log::warning("[BatchOrchestrator] Could not set group '{$group}' on {$path}: " . $e->getMessage());
         }
     }
 
@@ -564,8 +550,7 @@ class BatchOrchestrator
         $sourcePath = Storage::path($destination);
 
         /*
-         * Make source.csv readable/writable by both
-         * apache and nginx through uaplog.
+         * Make source.csv readable/writable by workers.
          */
         $this->prepareBatchFile($sourcePath);
 
@@ -830,12 +815,13 @@ class BatchOrchestrator
 
     /**
      * Get the operating-system group used for batch files.
+     * Checks config/filesystems.php first, then fallback to config/batch.php, then .env
      */
     protected function getBatchFilesGroup(): string
     {
         return config(
-            'batch.files_group',
-            'uaplog'
+            'filesystems.batch_files_group',
+            config('batch.files_group', env('BATCH_FILES_GROUP', 'www-data'))
         );
     }
 }

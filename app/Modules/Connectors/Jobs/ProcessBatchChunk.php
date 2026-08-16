@@ -4,6 +4,7 @@ namespace App\Modules\Connectors\Jobs;
 
 use App\Modules\Connectors\Models\JobInstance;
 use App\Modules\Connectors\Services\CommandExecutor;
+use App\Modules\Connectors\Providers\BaseProvider;
 use App\Modules\Core\Auditing\Services\UapLogger;
 use Illuminate\Bus\Batchable;
 use Illuminate\Bus\Queueable;
@@ -30,16 +31,6 @@ class ProcessBatchChunk implements ShouldQueue
     public $backoff = 30;
     public $timeout = 600;
 
-    /**
-     * @param JobInstance $instance
-     * @param string $dir
-     * @param int $offset
-     * @param int $limit
-     * @param int $commandId
-     * @param string|null $traceId
-     * @param int $heartbeat
-     * @param int $targetIntervalMs
-     */
     public function __construct(
         protected $instance,
         protected string $dir,
@@ -52,9 +43,6 @@ class ProcessBatchChunk implements ShouldQueue
     ) {
     }
 
-    /**
-     * Execute the chunk with self-throttling to respect Provider TPS.
-     */
     public function handle(
         CommandExecutor $executor,
         DynamicProfileResolver $profileResolver
@@ -65,11 +53,9 @@ class ProcessBatchChunk implements ShouldQueue
             return;
         }
 
-        // Key mapping blueprint by param key for fast lookups in the loop
         $blueprint = collect($instance->template->command->mapping_blueprint ?? [])
             ->keyBy('key');
 
-        // Determine if this batch job is running in MANY_MANY distribution mode
         $requestId = $instance->template->source_config['provisioning_request_id']
                   ?? $instance->instance_parameters['provisioning_request_id']
                   ?? null;
@@ -84,7 +70,6 @@ class ProcessBatchChunk implements ShouldQueue
             throw new \Exception("Source CSV file not found at {$sourcePath}");
         }
 
-        // Stream only assigned offset & limit from source CSV
         $reader = Reader::createFromPath($sourcePath, 'r');
         $reader->setHeaderOffset(0);
 
@@ -101,112 +86,113 @@ class ProcessBatchChunk implements ShouldQueue
         $localFailed = 0;
         $uncommittedProcessed = 0;
 
-        foreach ($records as $row) {
-            $rowStartTime = microtime(true);
-            $uncommittedProcessed++;
+        try {
+            foreach ($records as $row) {
+                $rowStartTime = microtime(true);
+                $uncommittedProcessed++;
 
-            try {
-                // Parameter Mapping
-                $resolvedParams = [];
-                $mapping = $instance->template->column_mapping ?? [];
-                foreach ($mapping as $paramName => $config) {
-                    $val = ($config['mode'] ?? 'static') === 'dynamic'
-                        ? ($row[$config['value']] ?? null)
-                        : ($config['value'] ?? null);
+                try {
+                    // Parameter Mapping
+                    $resolvedParams = [];
+                    $mapping = $instance->template->column_mapping ?? [];
+                    foreach ($mapping as $paramName => $config) {
+                        $val = ($config['mode'] ?? 'static') === 'dynamic'
+                            ? ($row[$config['value']] ?? null)
+                            : ($config['value'] ?? null);
 
-                    // Cast values based on command mapping blueprint types
-                    if ($val !== null && isset($blueprint[$paramName])) {
-                        $expectedType = strtolower($blueprint[$paramName]['type'] ?? '');
+                        if ($val !== null && isset($blueprint[$paramName])) {
+                            $expectedType = strtolower($blueprint[$paramName]['type'] ?? '');
 
-                        if (in_array($expectedType, ['integer', 'int', 'i4']) && is_numeric($val)) {
-                            $val = (int) $val;
-                        } elseif (in_array($expectedType, ['boolean', 'bool'])) {
-                            $val = filter_var($val, FILTER_VALIDATE_BOOLEAN);
+                            if (in_array($expectedType, ['integer', 'int', 'i4']) && is_numeric($val)) {
+                                $val = (int) $val;
+                            } elseif (in_array($expectedType, ['boolean', 'bool'])) {
+                                $val = filter_var($val, FILTER_VALIDATE_BOOLEAN);
+                            }
                         }
+
+                        $resolvedParams[$paramName] = $val;
                     }
 
-                    $resolvedParams[$paramName] = $val;
-                }
-
-                $nestedParams = [];
-                foreach ($resolvedParams as $key => $value) {
-                    Arr::set($nestedParams, $key, $value);
-                }
-
-                // Defaults from template
-                $targetProviderId = (int) $instance->template->provider_instance_id;
-                $targetCommandId  = (int) $this->commandId;
-
-                // DYNAMIC RESOLUTION FOR MANY_MANY MODE
-                if ($isManyMany) {
-                    $offerId = $nestedParams['offerId'] ?? $row['offer_id'] ?? $row['offerId'] ?? null;
-
-                    if (!$offerId) {
-                        throw new \Exception("Missing required offerId in batch record.");
+                    $nestedParams = [];
+                    foreach ($resolvedParams as $key => $value) {
+                        Arr::set($nestedParams, $key, $value);
                     }
 
-                    // Resolve matching ProvisioningProfile dynamically per row
-                    $profile = $profileResolver->resolveForOfferId($offerId);
+                    $targetProviderId = (int) $instance->template->provider_instance_id;
+                    $targetCommandId  = (int) $this->commandId;
 
-                    $targetProviderId = $profile->provisioning_provider_instance_id;
-                    $targetCommandId  = $profile->provisioning_command_id;
-                }
+                    // DYNAMIC RESOLUTION FOR MANY_MANY MODE
+                    if ($isManyMany) {
+                        $offerId = $nestedParams['offerId'] ?? $row['offer_id'] ?? $row['offerId'] ?? null;
 
-                // Execution via CommandExecutor
-                $logEntry = $executor->execute(
-                    $targetProviderId,
-                    $targetCommandId,
-                    $nestedParams,
-                    (int) ($instance->user_id ?? $instance->template->user_id ?? 1),
-                    $instance->id,
-                    $this->traceId
-                );
+                        if (!$offerId) {
+                            throw new \Exception("Missing required offerId in batch record.");
+                        }
 
-                if ($logEntry->is_successful) {
-                    $localSuccess++;
-                    $this->appendLocked($successFile, array_merge($row, [
-                        'command_log_id' => $logEntry->command_key ?? 'N/A',
-                        'response_code'  => $logEntry->response_code
-                    ]));
-                } else {
+                        $profile = $profileResolver->resolveForOfferId($offerId);
+                        $targetProviderId = $profile->provisioning_provider_instance_id;
+                        $targetCommandId  = $profile->provisioning_command_id;
+                    }
+
+                    // Execution via CommandExecutor
+                    $logEntry = $executor->execute(
+                        $targetProviderId,
+                        $targetCommandId,
+                        $nestedParams,
+                        (int) ($instance->user_id ?? $instance->template->user_id ?? 1),
+                        $instance->id,
+                        $this->traceId
+                    );
+
+                    if ($logEntry->is_successful) {
+                        $localSuccess++;
+                        $this->appendLocked($successFile, array_merge($row, [
+                            'command_log_id' => $logEntry->command_key ?? 'N/A',
+                            'response_code'  => $logEntry->response_code
+                        ]));
+                    } else {
+                        $localFailed++;
+                        $this->appendLocked($failedFile, array_merge($row, [
+                            'command_log_id' => $logEntry->command_key ?? 'N/A',
+                            'response_code'  => $logEntry->response_code,
+                            'error_message'  => $logEntry->response_payload['message'] ?? 'Provider execution failed'
+                        ]));
+                    }
+
+                } catch (\Throwable $e) {
                     $localFailed++;
                     $this->appendLocked($failedFile, array_merge($row, [
-                        'command_log_id' => $logEntry->command_key ?? 'N/A',
-                        'response_code'  => $logEntry->response_code,
-                        'error_message'  => $logEntry->response_payload['message'] ?? 'Provider execution failed'
+                        'command_log_id' => 'EXCEPTION',
+                        'response_code'  => 500,
+                        'error_message'  => $e->getMessage()
                     ]));
                 }
 
-            } catch (\Throwable $e) {
-                $localFailed++;
-                $this->appendLocked($failedFile, array_merge($row, [
-                    'command_log_id' => 'EXCEPTION',
-                    'response_code'  => 500,
-                    'error_message'  => $e->getMessage()
-                ]));
-            }
+                // --- SELF THROTTLING & HEARTBEAT ---
+                if ($this->targetIntervalMs > 0) {
+                    $elapsedMs = (microtime(true) - $rowStartTime) * 1000;
+                    $remainingSleep = $this->targetIntervalMs - $elapsedMs;
 
-            // --- SELF THROTTLING & HEARTBEAT ---
-            if ($this->targetIntervalMs > 0) {
-                $elapsedMs = (microtime(true) - $rowStartTime) * 1000;
-                $remainingSleep = $this->targetIntervalMs - $elapsedMs;
+                    if ($remainingSleep > 0) {
+                        usleep((int) ($remainingSleep * 1000));
+                    }
+                }
 
-                if ($remainingSleep > 0) {
-                    usleep((int) ($remainingSleep * 1000));
+                if ($uncommittedProcessed >= $this->heartbeat) {
+                    $instance->increment('processed_records', $uncommittedProcessed);
+                    $uncommittedProcessed = 0;
                 }
             }
-
-            if ($uncommittedProcessed >= $this->heartbeat) {
-                $instance->increment('processed_records', $uncommittedProcessed);
-                $uncommittedProcessed = 0;
+        } finally {
+            if ($successFile) {
+                fclose($successFile);
             }
-        }
+            if ($failedFile) {
+                fclose($failedFile);
+            }
 
-        if ($successFile) {
-            fclose($successFile);
-        }
-        if ($failedFile) {
-            fclose($failedFile);
+            // Flush active stateful sessions at the end of chunk execution
+            BaseProvider::closeActiveSessions();
         }
 
         // Final increments & completion sync
@@ -222,9 +208,6 @@ class ProcessBatchChunk implements ShouldQueue
         }
     }
 
-    /**
-     * Helper to handle atomic file appending across concurrent workers.
-     */
     protected function appendLocked($fileHandle, array $data): void
     {
         if ($fileHandle && flock($fileHandle, LOCK_EX)) {

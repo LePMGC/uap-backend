@@ -24,7 +24,7 @@ Artisan::command('inspire', function () {
 */
 
 // 1. Process Scheduled Batches (Core Engine Trigger)
-Schedule::command('batches:process-scheduled')
+Schedule::command('batch:process-scheduled')
     ->everyMinute()
     ->withoutOverlapping()
     ->onOneServer();

@@ -171,7 +171,11 @@ class UcipProvider extends BaseProvider
         }
 
         $xpath = new DOMXPath($dom);
-        $members = $xpath->query('//member');
+        
+        // Target top-level struct members in the XML-RPC payload
+        $members = $xpath->query('//methodCall/params/param/value/struct/member') 
+            ?? $xpath->query('//member');
+            
         $processedParams = [];
 
         foreach ($members as $member) {
@@ -184,40 +188,72 @@ class UcipProvider extends BaseProvider
 
             if (array_key_exists($paramName, $params)) {
                 $processedParams[$paramName] = true;
-                $valueNode = $xpath->query('value', $member)->item(0);
-                if ($valueNode && $valueNode->hasChildNodes()) {
-                    foreach ($valueNode->childNodes as $childNode) {
-                        if ($childNode->nodeType === XML_ELEMENT_NODE) {
-                            $val = $params[$paramName];
-                            if (is_bool($val)) {
-                                $val = $val ? '1' : '0';
+                $val = $params[$paramName];
+
+                $oldValueNode = $xpath->query('value', $member)->item(0);
+
+                if (is_array($val)) {
+                    // Complex/Composite parameter (Array or Struct): Build full XML-RPC structure
+                    $xmlFragment = "<value>" . $this->encodeValue($val) . "</value>";
+                    $fragment = $dom->createDocumentFragment();
+                    
+                    if ($fragment->appendXML($xmlFragment)) {
+                        if ($oldValueNode) {
+                            $member->replaceChild($fragment, $oldValueNode);
+                        } else {
+                            $member->appendChild($fragment);
+                        }
+                    }
+                } else {
+                    // Scalar parameter (string, int, boolean, iso8601)
+                    if ($oldValueNode && $oldValueNode->hasChildNodes()) {
+                        $updated = false;
+                        foreach ($oldValueNode->childNodes as $childNode) {
+                            if ($childNode->nodeType === XML_ELEMENT_NODE) {
+                                if (is_bool($val)) {
+                                    $val = $val ? '1' : '0';
+                                }
+                                $childNode->nodeValue = htmlspecialchars((string)$val, ENT_XML1 | ENT_COMPAT, 'UTF-8');
+                                $updated = true;
+                                break;
                             }
-                            $childNode->nodeValue = (string)$val;
-                            break;
+                        }
+                        
+                        if (!$updated) {
+                            $oldValueNode->nodeValue = htmlspecialchars((string)$val, ENT_XML1 | ENT_COMPAT, 'UTF-8');
+                        }
+                    } else {
+                        $xmlFragment = "<value>" . $this->encodeValue($val) . "</value>";
+                        $fragment = $dom->createDocumentFragment();
+                        if ($fragment->appendXML($xmlFragment)) {
+                            if ($oldValueNode) {
+                                $member->replaceChild($fragment, $oldValueNode);
+                            } else {
+                                $member->appendChild($fragment);
+                            }
                         }
                     }
                 }
             }
         }
 
+        // Append missing parameters that were not present in the template XML
         $structNode = $xpath->query('//struct')->item(0);
         if ($structNode) {
             foreach ($params as $key => $value) {
                 if (!isset($processedParams[$key])) {
                     $memberNode = $dom->createElement('member');
 
-                    $nameNode = $dom->createElement('name', htmlspecialchars($key));
+                    $nameNode = $dom->createElement('name', htmlspecialchars($key, ENT_XML1 | ENT_COMPAT, 'UTF-8'));
                     $memberNode->appendChild($nameNode);
 
-                    $valueNode = $dom->createElement('value');
-                    $typeTag = is_int($value) ? 'i4' : (is_bool($value) ? 'boolean' : 'string');
-                    $valStr = is_bool($value) ? ($value ? '1' : '0') : htmlspecialchars((string)$value);
-
-                    $typeNode = $dom->createElement($typeTag, $valStr);
-                    $valueNode->appendChild($typeNode);
-                    $memberNode->appendChild($valueNode);
-
-                    $structNode->appendChild($memberNode);
+                    $xmlFragment = "<value>" . $this->encodeValue($value) . "</value>";
+                    $fragment = $dom->createDocumentFragment();
+                    
+                    if ($fragment->appendXML($xmlFragment)) {
+                        $memberNode->appendChild($fragment);
+                        $structNode->appendChild($memberNode);
+                    }
                 }
             }
         }
@@ -240,10 +276,19 @@ class UcipProvider extends BaseProvider
         return $timestamp . str_pad((string)$sequence, 6, '0', STR_PAD_LEFT);
     }
 
-    private function encodeValue($value): string
+    private function encodeValue(mixed $value): string
     {
+        if (is_null($value)) {
+            return "<string></string>";
+        }
+
         if (is_array($value)) {
-            $isList = !empty($value) && array_keys($value) === range(0, count($value) - 1);
+            if (empty($value)) {
+                return "<array><data></data></array>";
+            }
+
+            // Check if sequential numeric list vs associative struct
+            $isList = array_keys($value) === range(0, count($value) - 1);
 
             if ($isList) {
                 $xml = "<array><data>";
@@ -254,7 +299,7 @@ class UcipProvider extends BaseProvider
             } else {
                 $struct = "<struct>";
                 foreach ($value as $k => $v) {
-                    $struct .= "<member><name>{$k}</name><value>{$this->encodeValue($v)}</value></member>";
+                    $struct .= "<member><name>" . htmlspecialchars((string)$k, ENT_XML1 | ENT_COMPAT, 'UTF-8') . "</name><value>" . $this->encodeValue($v) . "</value></member>";
                 }
                 return $struct . "</struct>";
             }
@@ -262,6 +307,10 @@ class UcipProvider extends BaseProvider
 
         if (is_int($value)) {
             return "<i4>{$value}</i4>";
+        }
+
+        if (is_float($value)) {
+            return "<double>{$value}</double>";
         }
 
         if (is_bool($value)) {
@@ -272,7 +321,7 @@ class UcipProvider extends BaseProvider
             return "<dateTime.iso8601>{$value}</dateTime.iso8601>";
         }
 
-        return "<string>{$value}</string>";
+        return "<string>" . htmlspecialchars((string)$value, ENT_XML1 | ENT_COMPAT, 'UTF-8') . "</string>";
     }
 
     protected function send(string $payload): string
@@ -417,69 +466,199 @@ class UcipProvider extends BaseProvider
         return $detected;
     }
 
-    private function extractXmlValue(\SimpleXMLElement $valueNode)
+    private function extractXmlValue(\SimpleXMLElement $valueNode): mixed
     {
-        if (!$valueNode->children()->count()) {
-            $val = (string)$valueNode;
-            return ctype_digit($val) ? (int)$val : $val;
+        /*
+        * XML-RPC <value> can contain:
+        *
+        * <string>
+        * <int>
+        * <i4>
+        * <i8>
+        * <boolean>
+        * <double>
+        * <dateTime.iso8601>
+        * <base64>
+        * <nil>
+        * <struct>
+        * <array>
+        */
+
+        $children = $valueNode->children();
+
+        /*
+        * Empty <value> or untyped XML-RPC value.
+        */
+        if ($children->count() === 0) {
+            $value = (string) $valueNode;
+
+            return ctype_digit($value)
+                ? (int) $value
+                : $value;
         }
 
-        $child = $valueNode->children()[0];
+        $child = $children[0];
         $type = strtolower($child->getName());
-        $value = (string)$child;
 
         switch ($type) {
+
+            /*
+            * Scalar values
+            */
+            case 'string':
+                return (string) $child;
+
             case 'int':
             case 'i4':
-                return (int)$value;
+            case 'i8':
+                return (int) $child;
 
             case 'boolean':
-                return $value === '1' || strtolower($value) === 'true';
+                $value = strtolower(trim((string) $child));
+
+                return $value === '1' || $value === 'true';
 
             case 'double':
-                return (float)$value;
+                return (float) $child;
 
-            case 'dateTime.iso8601':
-                return $value;
+            case 'datetime.iso8601':
+                return (string) $child;
 
-            case 'string':
+            case 'base64':
+                return (string) $child;
+
+            case 'nil':
+                return null;
+
+            /*
+            * XML-RPC struct
+            *
+            * <value>
+            *   <struct>
+            *     <member>
+            *       <name>usageCounterID</name>
+            *       <value>
+            *         <int>37022</int>
+            *       </value>
+            *     </member>
+            *     ...
+            *   </struct>
+            * </value>
+            */
+            case 'struct':
+                $result = [];
+
+                foreach ($child->member as $member) {
+                    $name = trim((string) $member->name);
+
+                    if ($name === '') {
+                        continue;
+                    }
+
+                    $result[$name] = $this->extractXmlValue(
+                        $member->value
+                    );
+                }
+
+                return $result;
+
+            /*
+            * XML-RPC array
+            *
+            * <value>
+            *   <array>
+            *     <data>
+            *       <value>...</value>
+            *       <value>...</value>
+            *     </data>
+            *   </array>
+            * </value>
+            */
+            case 'array':
+                $result = [];
+
+                if (isset($child->data)) {
+                    foreach ($child->data->value as $item) {
+                        $result[] = $this->extractXmlValue($item);
+                    }
+                }
+
+                return $result;
+
+            /*
+            * Unknown XML-RPC/custom type.
+            *
+            * Try to preserve nested structures rather than
+            * converting them to whitespace.
+            */
             default:
-                return $value;
+                if ($child->children()->count() > 0) {
+                    return $this->extractXmlValue($child);
+                }
+
+                return trim((string) $child);
         }
     }
 
     public function parseSamplePayload(string $rawPayload): array
     {
         try {
-            if (empty($rawPayload)) {
+            /*
+            * Empty payload
+            */
+            if (empty(trim($rawPayload))) {
                 return [
-                    'method'        => "",
+                    'method'        => '',
                     'params'        => [],
                     'system_params' => [],
-                    'raw_payload'   => ""
+                    'raw_payload'   => '',
                 ];
             }
 
+            /*
+            * If anything exists before <?xml, remove it.
+            */
             if (strpos($rawPayload, '<?xml') !== 0) {
                 $xmlStart = strpos($rawPayload, '<?xml');
+
                 if ($xmlStart !== false) {
                     $rawPayload = substr($rawPayload, $xmlStart);
                 }
             }
 
+            /*
+            * Parse XML.
+            */
             $xml = new \SimpleXMLElement($rawPayload);
-            $methodName = (string)$xml->methodName;
 
+            $methodName = (string) $xml->methodName;
+
+            /*
+            * Locate the root struct:
+            *
+            * methodCall
+            *   params
+            *     param
+            *       value
+            *         struct
+            */
             $struct = $xml->params->param->value->struct;
-            if (!$struct) {
+
+            if (!$struct || $struct->member->count() === 0) {
                 return [
                     'method'        => $methodName,
                     'params'        => [],
                     'system_params' => [],
-                    'raw_payload'   => $rawPayload
+                    'raw_payload'   => $xml->asXML(),
                 ];
             }
 
+            /*
+            * Runtime/system parameters.
+            *
+            * These values are generated instead of being taken
+            * from the sample payload.
+            */
             $systemMap = [
                 'originNodeType'      => 'EXT',
                 'originHostName'      => 'UAP',
@@ -491,35 +670,69 @@ class UcipProvider extends BaseProvider
             $detectedSystemParams = [];
             $userParams = [];
 
+            /*
+            * Parse every member of the root struct.
+            */
             foreach ($struct->member as $member) {
-                $name = (string)$member->name;
-                $value = $this->extractXmlValue($member->value);
 
+                $name = trim((string) $member->name);
+
+                if ($name === '') {
+                    continue;
+                }
+
+                /*
+                * IMPORTANT:
+                *
+                * This now recursively handles:
+                *
+                * array -> struct -> member -> value
+                *
+                * instead of converting an array to its whitespace.
+                */
+                $value = $this->extractXmlValue(
+                    $member->value
+                );
+
+                /*
+                * System parameters
+                */
                 if (array_key_exists($name, $systemMap)) {
+
                     $newValue = $systemMap[$name];
 
-                    if ($member->value->children()->count()) {
-                        $child = $member->value->children()[0];
-                        $child[0] = $newValue;
-                    } else {
-                        $member->value = $newValue;
-                    }
-
                     $detectedSystemParams[$name] = $newValue;
-                } else {
-                    $userParams[$name] = $value;
+
+                    /*
+                    * We intentionally do NOT mutate the XML here.
+                    *
+                    * The generated system values are returned through
+                    * system_params and merged by the controller.
+                    */
+                    continue;
                 }
+
+                /*
+                * User parameters preserve their complete parsed
+                * structure.
+                */
+                $userParams[$name] = $value;
             }
 
             return [
                 'method'        => $methodName,
                 'params'        => $userParams,
                 'system_params' => $detectedSystemParams,
-                'raw_payload'   => $xml->asXML()
+                'raw_payload'   => $xml->asXML(),
             ];
 
-        } catch (\Exception $e) {
-            throw new \Exception("Failed to parse UCIP sample: " . $e->getMessage());
+        } catch (\Throwable $e) {
+            throw new \Exception(
+                'Failed to parse UCIP sample: ' .
+                $e->getMessage(),
+                0,
+                $e
+            );
         }
     }
 

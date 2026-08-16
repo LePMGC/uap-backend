@@ -10,38 +10,64 @@ class CaiProvider extends BaseProvider
     protected array $statusRegistry;
     private $connection;
 
+    /**
+     * Static connection pools across instantiations in the same CLI process
+     */
+    protected static array $socketPool = [];
+    protected static array $authenticatedPool = [];
+
     public function __construct(array $config, array $blueprint)
     {
         parent::__construct($config, $blueprint);
-        // Load the CAI specific codes
         $this->statusRegistry = require __DIR__ . '/../Config/cai_codes.php';
     }
 
     protected function login(): void
     {
-        $this->connection = fsockopen($this->config['host'], $this->config['port'], $errno, $errstr, 10);
+        $host = $this->config['host'] ?? '';
+        $port = $this->config['port'] ?? 0;
+        $connectionKey = "{$host}:{$port}";
 
-        if (!$this->connection) {
-            throw new Exception("CAI Connection failed: $errstr ($errno)");
+        // 1. Reuse existing persistent TCP socket if active
+        if (isset(self::$socketPool[$connectionKey]) && is_resource(self::$socketPool[$connectionKey])) {
+            $this->connection = self::$socketPool[$connectionKey];
+        } else {
+            $this->connection = @pfsockopen($host, $port, $errno, $errstr, 10);
+
+            if (!$this->connection) {
+                throw new Exception("CAI Connection failed: $errstr ($errno)");
+            }
+
+            self::$socketPool[$connectionKey] = $this->connection;
+            self::$authenticatedPool[$connectionKey] = false;
+        }
+
+        // 2. Skip LOGIN command if session is already authenticated on this persistent socket
+        if (!empty(self::$authenticatedPool[$connectionKey])) {
+            $this->authenticated = true;
+            return;
         }
 
         $loginCmd = "LOGIN:{$this->config['username']}:{$this->config['password']};";
         $response = $this->send($loginCmd);
 
-        // We check for code 0 specifically for login
         if (!$this->isResponseSuccessful($response)) {
             throw new Exception("CAI Authentication Failed: " . $response);
         }
 
         $this->authenticated = true;
+        self::$authenticatedPool[$connectionKey] = true;
     }
 
     protected function send(string $payload): string
     {
+        if (!$this->connection || !is_resource($this->connection)) {
+            throw new Exception("Cannot send command: TCP connection is not active.");
+        }
+
         fwrite($this->connection, $payload . "\n");
 
         $buffer = "";
-        // MML responses usually end with a semicolon
         while (!str_contains($buffer, ';')) {
             $chunk = fgets($this->connection, 4096);
             if ($chunk === false) {
@@ -54,17 +80,73 @@ class CaiProvider extends BaseProvider
 
     protected function logout(): void
     {
-        if ($this->connection) {
-            $this->send("LOGOUT;");
-            fclose($this->connection);
-            $this->authenticated = false;
+        // Suppress teardown on individual commands during batch execution
+        if (!empty($this->config['job_instance_id']) || $this->inBatchSession) {
+            return;
         }
+
+        $this->forceLogout();
     }
 
     /**
-     * Overrides BaseProvider to handle MML string construction
-     * from the database sample payload.
+     * Sends LOGOUT and closes TCP socket connection
      */
+    public function forceLogout(): void
+    {
+        $host = $this->config['host'] ?? '';
+        $port = $this->config['port'] ?? 0;
+        $connectionKey = "{$host}:{$port}";
+
+        $conn = self::$socketPool[$connectionKey] ?? $this->connection;
+
+        if ($conn && is_resource($conn)) {
+            try {
+                fwrite($conn, "LOGOUT;\n");
+            } catch (\Throwable $e) {
+                // Suppress teardown socket errors
+            }
+            fclose($conn);
+        }
+
+        $this->connection = null;
+        $this->authenticated = false;
+        unset(self::$socketPool[$connectionKey], self::$authenticatedPool[$connectionKey]);
+    }
+
+    /**
+     * Closes all active pooled sessions when ProcessBatchChunk completes
+     */
+    public static function closeActiveSessions(): void
+    {
+        foreach (self::$socketPool as $key => $conn) {
+            if ($conn && is_resource($conn)) {
+                try {
+                    fwrite($conn, "LOGOUT;\n");
+                } catch (\Throwable $e) {
+                    // Suppress teardown errors
+                }
+                fclose($conn);
+            }
+        }
+        self::$socketPool = [];
+        self::$authenticatedPool = [];
+    }
+
+    public function beginSession(): void
+    {
+        $this->inBatchSession = true;
+        $this->login();
+    }
+
+    public function endSession(): void
+    {
+        try {
+            $this->forceLogout();
+        } finally {
+            $this->inBatchSession = false;
+        }
+    }
+
     protected function buildPayload(array $commandDef, array $params, ?string $operatorId = null): string
     {
         $payload = $commandDef['request_payload'] ?? '';
@@ -85,14 +167,12 @@ class CaiProvider extends BaseProvider
 
     public function parseResponse(array $commandDef, string $rawResponse, array $userParams): array
     {
-        // Extract the code using Regex from "RESP:0;" or "RESP:101:MSISDN..."
         preg_match('/RESP:(\d+)/', $rawResponse, $matches);
         $code = isset($matches[1]) ? (int)$matches[1] : null;
 
         $isSuccessful = ($code === 0);
         $message = $this->statusRegistry['responses'][$code] ?? "Unknown CAI Code ($code)";
 
-        // TELECOM LOGGING
         \App\Modules\Core\Auditing\Services\UapLogger::log(
             'EricssonCAI',
             'PROVIDER_RESPONSE',
@@ -114,27 +194,17 @@ class CaiProvider extends BaseProvider
         ];
     }
 
-    /**
-     * Helper to verify success for internal steps (login/logout)
-     */
     private function isResponseSuccessful(string $rawResponse): bool
     {
         return str_contains($rawResponse, 'RESP:0');
     }
 
-    /**
-     * Parses the CAI string into a Key-Value array
-     * From: RESP:0:MSISDN,24206123:IMSI,62910...
-     * To: ['MSISDN' => '24206123', 'IMSI' => '62910...']
-     */
     private function parseCaiData(string $raw): array
     {
         \Log::debug("Parsing CAI Response Data", ['raw' => $raw]);
 
         $data = [];
-
         $clean = rtrim(trim($raw), ';');
-
         $parts = explode(':', $clean);
 
         foreach ($parts as $index => $part) {
@@ -155,23 +225,17 @@ class CaiProvider extends BaseProvider
         return $data;
     }
 
-
     public function checkHealth(): bool
     {
         try {
-            // Attempt a full login sequence to verify credentials and protocol
             $this->login();
-            $this->logout();
+            $this->forceLogout();
             return true;
         } catch (\Exception $e) {
             return false;
         }
     }
 
-    /**
-        * Generates a mapping blueprint by parsing the MML sample payload.
-        * Unlike UCIP, CAI/MML is flat, so all parameters are Level 0.
-    */
     public function getMappingBlueprint(string $rawSample): array
     {
         $blueprint = [];
@@ -180,11 +244,9 @@ class CaiProvider extends BaseProvider
             return $blueprint;
         }
 
-        // 1. Parse: "SET:HLRSUB:MSISDN,242064678080:MCA,0"
         $parsed = $this->parseSamplePayload($rawSample);
         $params = $parsed['params'] ?? [];
 
-        // 2. Build flat blueprint
         foreach ($params as $key => $sampleValue) {
             $blueprint[] = [
                 'key'         => $key,
@@ -192,16 +254,13 @@ class CaiProvider extends BaseProvider
                 'level'       => 0,
                 'isParent'    => false,
                 'is_required' => true,
-                'value'       => $sampleValue, // This is what the user sees in the form as a guide
+                'value'       => $sampleValue,
             ];
         }
 
         return $blueprint;
     }
 
-    /**
-     * Helper to guess the type from the MML string value.
-     */
     protected function inferMmlType(mixed $value): string
     {
         if (is_numeric($value)) {
@@ -216,14 +275,12 @@ class CaiProvider extends BaseProvider
         return 'String';
     }
 
-
     public function extractSystemParams(string $rawPayload): array
     {
         $detected = [];
         $keys = ['originHostName', 'originTransactionID'];
 
         foreach ($keys as $key) {
-            // Regex for KEY,VALUE patterns in MML
             if (preg_match("/{$key},([^:;,\s]+)/i", $rawPayload, $matches)) {
                 $detected[$key] = trim($matches[1]);
             }
@@ -234,7 +291,6 @@ class CaiProvider extends BaseProvider
 
     public function parseSamplePayload(string $rawPayload): array
     {
-        // Example: "SET:MSISDN,24206...:KEY,VAL;"
         $parts = explode(':', rtrim($rawPayload, ';'));
         $method = array_shift($parts);
         $params = [];
@@ -252,7 +308,6 @@ class CaiProvider extends BaseProvider
     public function extractIdentifier(string $rawPayload): ?string
     {
         try {
-            // Matches MSISDN, followed by a comma, then captures digits/chars until the next colon, semicolon, or space
             if (preg_match('/MSISDN,([^:;,\s]+)/i', $rawPayload, $matches)) {
                 return $matches[1];
             }
@@ -261,6 +316,4 @@ class CaiProvider extends BaseProvider
         }
         return null;
     }
-
-
 }
